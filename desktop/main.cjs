@@ -53,5 +53,14 @@ ipcMain.handle("acb:pick-folder", async () => {
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
 });
 
+ipcMain.handle("acb:pick-archive", async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: "选择 ACB 交接文件",
+    properties: ["openFile"],
+    filters: [{ name: "ACB 交接包", extensions: ["gz"] }, { name: "所有文件", extensions: ["*"] }],
+  });
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+});
+
 app.whenReady().then(createWindow);
 app.on("window-all-closed", () => app.quit());

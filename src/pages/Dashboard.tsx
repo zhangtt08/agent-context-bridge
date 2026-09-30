@@ -8,12 +8,6 @@ import { PageHead, Panel, Topbar } from "../components/Shell";
 import { useProject } from "../state";
 import { api, fmtTime, type Overview } from "../api";
 
-declare global {
-  interface Window {
-    acb?: { pickFolder: () => Promise<string | null> }; // Electron 桌面壳注入的原生目录选择
-  }
-}
-
 export default function Dashboard() {
   const { active, projects, setActiveId, refresh } = useProject();
   const [ov, setOv] = useState<Overview | null>(null);
@@ -47,7 +41,7 @@ export default function Dashboard() {
   };
 
   const pickFolder = async () => {
-    const dir = await window.acb?.pickFolder();
+    const dir = await window.acb?.pickFolder?.();
     if (dir) setRegPath(dir);
   };
 
@@ -63,6 +57,9 @@ export default function Dashboard() {
 
   const regForm = (
     <>
+      <div className="xs muted" style={{ marginBottom: 12 }}>
+        三步上手：<b>① 注册项目</b> → <b>② 创建交接并发布</b>（GitHub 跨电脑 / 本地文件）→ <b>③ 另一台电脑恢复</b>后让 Agent 读接手入口。GitHub 跨电脑需先在侧边栏 <Link to="/settings" className="amber">项目设置</Link> 里配置远端。
+      </div>
       <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
         <input
           value={regPath}
@@ -251,7 +248,7 @@ export default function Dashboard() {
               <Panel title="本机环境" icon={<MonitorCog size={15} className="amber" />} tag="observation" style={{ gridColumn: "span 5" }} bodyStyle={{ paddingTop: 8 }}>
                 <div className="li-row" style={{ padding: "9px 0" }}><span className="mono xs muted" style={{ width: 110 }}>OS</span><span className="mono xs">{ov.dirty.env.os}</span><span className="badge green" style={{ marginLeft: "auto" }}>已记录</span></div>
                 <div className="li-row" style={{ padding: "9px 0" }}><span className="mono xs muted" style={{ width: 110 }}>Runtime</span><span className="mono xs">{ov.dirty.env.node}</span><span className="badge green" style={{ marginLeft: "auto" }}>已记录</span></div>
-                <div className="li-row" style={{ padding: "9px 0" }}><span className="mono xs muted" style={{ width: 110 }}>GitHub</span><span className="mono xs">{ov.config.githubRemote ?? "未配置远端"}</span><span className={"badge " + (ov.config.githubRemote ? "green" : "amber")} style={{ marginLeft: "auto" }}>{ov.config.githubRemote ? "已配置" : "待配置"}</span></div>
+                <div className="li-row" style={{ padding: "9px 0" }}><span className="mono xs muted" style={{ width: 110 }}>GitHub</span><span className="mono xs" style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis" }}>{ov.config.githubRemote ?? "未配置远端"}</span>{!ov.config.githubRemote && <Link to="/settings" className="btn sm ghost" style={{ marginRight: 6 }}>去配置</Link>}<span className={"badge " + (ov.config.githubRemote ? "green" : "amber")} style={{ marginLeft: "auto" }}>{ov.config.githubRemote ? "已配置" : "待配置"}</span></div>
                 <div className="li-row" style={{ padding: "9px 0" }}><span className="mono xs muted" style={{ width: 110 }}>检查命令</span><span className="mono xs">{ov.config.checks.length} 条</span><span style={{ marginLeft: "auto" }}><Link to="/create" className="btn sm ghost"><FlaskConical size={12} /> 在创建时执行</Link></span></div>
               </Panel>
             </div>

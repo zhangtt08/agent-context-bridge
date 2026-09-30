@@ -40,7 +40,9 @@ export function Rail({ theme, onToggleTheme }: { theme: "light" | "dark"; onTogg
       <NavLink to="/resume" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="恢复">
         <MonitorDown size={17} />
       </NavLink>
-      <a className="nav" title="设置"><Settings2 size={17} /></a>
+      <NavLink to="/settings" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="项目设置（GitHub 远端 / 检查命令）">
+        <Settings2 size={17} />
+      </NavLink>
       <div className="spacer" />
       <div className="rail-tag">LOCAL · NO CLOUD MIDDLEMAN</div>
       <button className="theme-toggle" onClick={onToggleTheme} title="切换主题">

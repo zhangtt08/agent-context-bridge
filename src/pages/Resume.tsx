@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   CheckCircle2, Wrench, RefreshCw, OctagonX, Check, Loader, FileText,
-  MonitorCog, ListTree, Rocket, TriangleAlert, History, Laptop2,
+  MonitorCog, ListTree, Rocket, TriangleAlert, History, Laptop2, FolderOpen, Search,
 } from "lucide-react";
 import { PageHead, Panel, Topbar } from "../components/Shell";
 import { useProject } from "../state";
@@ -14,6 +14,12 @@ const verdictIcon = {
   恢复被阻塞: <OctagonX size={16} className="muted" />,
 };
 
+/** 交接 ID 就印在文件名里（acb-hnd_<id>.acb.tar.gz），选中文件即自动提取 */
+function idFromArchivePath(p: string): string {
+  const m = p.match(/acb-(hnd_[a-z0-9]+)\.acb\.tar\.gz$/i);
+  return m ? m[1] : "";
+}
+
 export default function Resume() {
   const { active } = useProject();
   const [mode, setMode] = useState<"file" | "remote" | "github">("file");
@@ -21,6 +27,8 @@ export default function Resume() {
   const [handoffId, setHandoffId] = useState("");
   const [targetDir, setTargetDir] = useState("");
   const [remoteOverride, setRemoteOverride] = useState("");
+  const [remoteList, setRemoteList] = useState<{ id: string; taskName: string | null }[] | null>(null);
+  const [listing, setListing] = useState(false);
   const [reports, setReports] = useState<ResumeReport[]>([]);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -44,6 +52,25 @@ export default function Resume() {
       await loadReports();
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     setBusy(false);
+  };
+
+  const pickArchive = async () => {
+    const f = await window.acb?.pickArchive?.();
+    if (!f) return;
+    setFilePath(f);
+    const id = idFromArchivePath(f);
+    if (id) setHandoffId(id);
+  };
+
+  const listRemote = async () => {
+    setListing(true); setErr(null);
+    try {
+      const r = remoteOverride.trim() || active?.githubRemote || "";
+      if (!r) throw new Error("请先填写远端地址，或在项目设置里配置 GitHub 远端");
+      const list = await api.remoteHandoffs(active?.projectId ?? null, remoteOverride.trim() || undefined);
+      setRemoteList(list);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); setRemoteList(null); }
+    setListing(false);
   };
 
   const latest = reports[0];
@@ -81,9 +108,18 @@ export default function Resume() {
             </div>
             {mode === "file" && (
               <>
-                <div className="xs muted" style={{ marginBottom: 5 }}>交接文件路径（acb-*.acb.tar.gz）</div>
-                <input className="acb-input mono" value={filePath} onChange={(e) => setFilePath(e.target.value)} placeholder="C:\Users\you\Downloads\acb-hnd_xxxx.acb.tar.gz" />
-                <div className="xs muted" style={{ margin: "10px 0 5px" }}>交接 ID</div>
+                <div className="xs muted" style={{ marginBottom: 5 }}>交接文件路径（acb-*.acb.tar.gz，选中后自动提取交接 ID）</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input className="acb-input mono" style={{ flex: 1 }} value={filePath} onChange={(e) => {
+                    setFilePath(e.target.value);
+                    const id = idFromArchivePath(e.target.value);
+                    if (id) setHandoffId(id);
+                  }} placeholder="C:\Users\you\Downloads\acb-hnd_xxxx.acb.tar.gz" />
+                  {window.acb?.pickArchive && (
+                    <button className="btn" onClick={() => void pickArchive()}><FolderOpen size={14} /> 选择文件</button>
+                  )}
+                </div>
+                <div className="xs muted" style={{ margin: "10px 0 5px" }}>交接 ID（从文件名自动提取，一般无需手填）</div>
                 <input className="acb-input mono" value={handoffId} onChange={(e) => setHandoffId(e.target.value)} placeholder="hnd_xxxxxxxx" />
               </>
             )}
@@ -98,11 +134,29 @@ export default function Resume() {
             )}
             {mode === "github" && (
               <div className="xs muted" style={{ padding: "10px 12px", background: "var(--panel-2)", border: "1px solid var(--line)" }}>
-                直接从 <b>{active?.githubRemote ?? "项目配置的远端"}</b> 的交接分支 <span className="mono">acb/handoff/&lt;id&gt;</span> 恢复（真正的跨电脑路径：代码检查点 + 暂存材料 + 元数据都来自远端）。
-                <div style={{ marginTop: 8 }}><span className="muted">交接 ID：</span></div>
-                <input className="acb-input mono" style={{ marginTop: 6 }} value={handoffId} onChange={(e) => setHandoffId(e.target.value)} placeholder="hnd_xxxxxxxx" />
-                <div className="muted" style={{ marginTop: 8 }}>远端覆盖（可选，留空用项目配置）：</div>
+                直接从 <b>{remoteOverride.trim() || active?.githubRemote || "项目配置的远端"}</b> 的交接分支恢复（真正的跨电脑路径：代码检查点 + 暂存材料 + 元数据都来自远端）。
+                <div style={{ marginTop: 8 }}><span className="muted">远端地址（留空用项目设置里配置的）：</span></div>
                 <input className="acb-input mono" style={{ marginTop: 6 }} value={remoteOverride} onChange={(e) => setRemoteOverride(e.target.value)} placeholder="https://github.com/you/repo.git 或本地裸仓路径" />
+                <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 8 }}>
+                  <button className="btn sm ghost" disabled={listing} onClick={() => void listRemote()}>
+                    {listing ? <Loader size={13} /> : <Search size={13} />} 查看该仓库的交接
+                  </button>
+                  <span className="xs faint">不确定交接 ID？点这里从远端选一个。</span>
+                </div>
+                {remoteList && (
+                  <div style={{ marginTop: 10 }}>
+                    {remoteList.length === 0 && <div className="xs muted">远端还没有任何交接。</div>}
+                    {remoteList.map((h) => (
+                      <button key={h.id} className={"li-row " + (handoffId.trim() === h.id ? "sel" : "")} style={{ width: "100%", textAlign: "left", cursor: "pointer", background: handoffId.trim() === h.id ? "var(--panel-2)" : "transparent", border: "1px solid var(--line)", padding: "8px 10px", marginBottom: 6 }}
+                        onClick={() => setHandoffId(h.id)}>
+                        <span className="mono xs amber">{h.id}</span>
+                        <span className="xs" style={{ marginLeft: 10 }}>{h.taskName ?? "（无任务名）"}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+                <div className="muted" style={{ marginTop: 8 }}>交接 ID：</div>
+                <input className="acb-input mono" style={{ marginTop: 6 }} value={handoffId} onChange={(e) => setHandoffId(e.target.value)} placeholder="hnd_xxxxxxxx" />
               </div>
             )}
             <div className="xs muted" style={{ margin: "10px 0 5px" }}>目标目录（默认使用新的隔离目录）</div>

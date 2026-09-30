@@ -6,6 +6,7 @@ import Dashboard from "./pages/Dashboard";
 import CreateHandoff from "./pages/CreateHandoff";
 import HandoffDetail from "./pages/HandoffDetail";
 import Resume from "./pages/Resume";
+import Settings from "./pages/Settings";
 
 type Theme = "light" | "dark";
 
@@ -31,6 +32,7 @@ export default function App() {
               <Route path="/create" element={<CreateHandoff />} />
               <Route path="/handoff/:id" element={<HandoffDetail />} />
               <Route path="/resume" element={<Resume />} />
+              <Route path="/settings" element={<Settings />} />
             </Routes>
           </div>
         </div>

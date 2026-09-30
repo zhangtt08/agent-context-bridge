@@ -6,6 +6,16 @@ import type {
 
 const BASE = "/api";
 
+// Electron 桌面壳经 preload 注入的原生对话框（浏览器端不存在，用可选属性降级）
+declare global {
+  interface Window {
+    acb?: {
+      pickFolder?: () => Promise<string | null>;
+      pickArchive?: () => Promise<string | null>;
+    };
+  }
+}
+
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(BASE + url, {
     headers: { "Content-Type": "application/json" },
@@ -26,6 +36,7 @@ export const api = {
   seedDemo: () => j<ProjectConfig>("/demo/seed", { method: "POST" }),
 
   overview: (id: string) => j<Overview>(`/projects/${id}/overview`),
+  config: (id: string) => j<ProjectConfig>(`/projects/${id}/config`),
   saveConfig: (id: string, patch: Partial<Pick<ProjectConfig, "checks" | "githubRemote" | "name">>) =>
     j<ProjectConfig>(`/projects/${id}/config`, { method: "PUT", body: JSON.stringify(patch) }),
 
@@ -36,8 +47,11 @@ export const api = {
   publish: (id: string, target: "github" | "local", remote?: string) =>
     j<{ receipt: PublicationReceipt; record: HandoffRecord }>(`/handoffs/${id}/publish`, { method: "POST", body: JSON.stringify({ target, remote }) }),
 
-  remoteHandoffs: (projectId: string) =>
-    j<{ id: string; sha: string; taskName: string | null; parentHandoffIds: string[] }[]>(`/remotes/handoffs?projectId=${encodeURIComponent(projectId)}`),
+  // 列出远端交接：优先用远端地址直查（电脑 B 未注册项目时），否则用项目配置的远端
+  remoteHandoffs: (projectId: string | null, remote?: string) => {
+    const qs = remote ? `remote=${encodeURIComponent(remote)}` : `projectId=${encodeURIComponent(projectId ?? "")}`;
+    return j<{ id: string; sha: string; taskName: string | null; parentHandoffIds: string[] }[]>(`/remotes/handoffs?${qs}`);
+  },
 
   resume: (input: { mode: "file" | "remote" | "github"; filePath?: string; projectId?: string; remote?: string; handoffId?: string; targetDir: string }) =>
     j<{ report: ResumeReport; taskName?: string }>("/resume", { method: "POST", body: JSON.stringify(input) }),
