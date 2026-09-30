@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   GitBranchPlus, GitCommitVertical, GitFork, Package, MonitorCog, TriangleAlert,
-  ChevronRight, Loader, RefreshCw, Plus, FolderGit2, FlaskConical,
+  ChevronRight, Loader, RefreshCw, Plus, FolderGit2, FlaskConical, Trash2, FolderOpen,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 import { PageHead, Panel, Topbar } from "../components/Shell";
 import { useProject } from "../state";
 import { api, fmtTime, type Overview } from "../api";
+
+declare global {
+  interface Window {
+    acb?: { pickFolder: () => Promise<string | null> }; // Electron 桌面壳注入的原生目录选择
+  }
+}
 
 export default function Dashboard() {
   const { active, projects, setActiveId, refresh } = useProject();
@@ -14,6 +20,8 @@ export default function Dashboard() {
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [regPath, setRegPath] = useState("");
+  const [mgmt, setMgmt] = useState(false);
+  const [delId, setDelId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!active) { setOv(null); return; }
@@ -38,6 +46,43 @@ export default function Dashboard() {
     setBusy(null);
   };
 
+  const pickFolder = async () => {
+    const dir = await window.acb?.pickFolder();
+    if (dir) setRegPath(dir);
+  };
+
+  const removeProject = async (projectId: string) => {
+    setBusy("remove:" + projectId);
+    try {
+      await api.removeProject(projectId);
+      await refresh();
+      setDelId(null);
+    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    setBusy(null);
+  };
+
+  const regForm = (
+    <>
+      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+        <input
+          value={regPath}
+          onChange={(e) => setRegPath(e.target.value)}
+          placeholder="输入 Git 仓库的本地绝对路径，如 D:\dev\my-project"
+          style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)", padding: "9px 12px", fontFamily: "var(--mono)", fontSize: 12.5 }}
+        />
+        {window.acb && (
+          <button className="btn" onClick={() => void pickFolder()}><FolderOpen size={14} /> 选择文件夹</button>
+        )}
+        <button className="btn primary" disabled={!regPath.trim() || busy !== null} onClick={() => void register(false)}>
+          {busy === "register" ? <Loader size={14} /> : <Plus size={14} />} 注册项目
+        </button>
+      </div>
+      <div className="xs faint" style={{ marginTop: 12 }}>
+        没有合适的仓库？<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => void register(true)}>一键创建示例项目（含暂存/未暂存/新文件/删除的脏工作区）</button>
+      </div>
+    </>
+  );
+
   if (!projects.length && busy !== "register") {
     return (
       <>
@@ -46,20 +91,7 @@ export default function Dashboard() {
           <PageHead kicker="Get Started" title="注册一个 Git 项目开始使用" sub="ACB 在本地运行：项目注册表保存在本机，任何代码都不会离开你的设备。" />
           <Panel title="开始" icon={<FolderGit2 size={15} className="amber" />} corner>
             {err && <div className="notice warn" style={{ marginBottom: 14 }}><TriangleAlert size={15} className="red" /><div className="xs red">{err}</div></div>}
-            <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-              <input
-                value={regPath}
-                onChange={(e) => setRegPath(e.target.value)}
-                placeholder="输入 Git 仓库的本地绝对路径，如 D:\dev\my-project"
-                style={{ flex: 1, background: "var(--panel-2)", border: "1px solid var(--line)", color: "var(--ink)", padding: "9px 12px", fontFamily: "var(--mono)", fontSize: 12.5 }}
-              />
-              <button className="btn primary" disabled={!regPath.trim() || busy !== null} onClick={() => void register(false)}>
-                {busy === "register" ? <Loader size={14} /> : <Plus size={14} />} 注册项目
-              </button>
-            </div>
-            <div className="xs faint" style={{ marginTop: 14 }}>
-              没有合适的仓库？<button className="btn sm" style={{ marginLeft: 8 }} onClick={() => void register(true)}>一键创建示例项目（含暂存/未暂存/新文件/删除的脏工作区）</button>
-            </div>
+            {regForm}
           </Panel>
         </div>
       </>
@@ -77,6 +109,9 @@ export default function Dashboard() {
           >
             {projects.map((p) => <option key={p.projectId} value={p.projectId}>{p.name}</option>)}
           </select>
+          <button className={"btn sm " + (mgmt ? "primary" : "ghost")} onClick={() => { setMgmt(!mgmt); setDelId(null); }}>
+            <FolderGit2 size={13} /> 项目管理
+          </button>
           <button className="btn sm ghost" onClick={() => void load()}><RefreshCw size={13} /> 刷新</button>
         </>
       } />
@@ -88,6 +123,40 @@ export default function Dashboard() {
         />
 
         {err && <div className="notice warn" style={{ marginBottom: 16 }}><TriangleAlert size={15} className="red" /><div className="xs red">{err}</div></div>}
+
+        {mgmt && (
+          <Panel title="项目库管理" icon={<FolderGit2 size={15} className="amber" />} tag={`${projects.length} 个项目`} corner style={{ marginBottom: 18 }}>
+            {regForm}
+            <div style={{ borderTop: "1px solid var(--line)", marginTop: 14, paddingTop: 6 }}>
+              {projects.map((p) => (
+                <div className="li-row" key={p.projectId} style={{ padding: "9px 0" }}>
+                  <FolderGit2 size={14} className={p.projectId === active?.projectId ? "amber" : "faint"} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <b className="small">{p.name}</b>
+                    {p.projectId === active?.projectId && <span className="badge green" style={{ marginLeft: 8 }}>当前</span>}
+                    <div className="xs faint mono" style={{ overflow: "hidden", textOverflow: "ellipsis" }}>{p.path}</div>
+                  </div>
+                  {delId === p.projectId ? (
+                    <span style={{ display: "flex", gap: 6 }}>
+                      <button className="btn sm" disabled={busy !== null} onClick={() => setDelId(null)}>取消</button>
+                      <button className="btn sm primary" disabled={busy !== null} onClick={() => void removeProject(p.projectId)}>
+                        {busy === "remove:" + p.projectId ? <Loader size={13} /> : <Trash2 size={13} />} 确认删除
+                      </button>
+                    </span>
+                  ) : (
+                    <button className="btn sm ghost" title="从项目库移除" onClick={() => setDelId(p.projectId)}>
+                      <Trash2 size={13} /> 删除
+                    </button>
+                  )}
+                </div>
+              ))}
+              <div className="xs faint" style={{ padding: "8px 0 4px" }}>
+                删除仅把项目从本机注册表移除，不删除项目目录与其中已封存的 .acb 交接数据；重新注册即可恢复管理。
+              </div>
+            </div>
+          </Panel>
+        )}
+
         {!ov && !err && <div className="muted"><Loader size={16} className="amber" style={{ animation: "spin 1s linear infinite" }} /> 加载中…</div>}
 
         {ov && (

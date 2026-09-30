@@ -1,5 +1,5 @@
 // ACB 桌面壳（Electron）：进程内启动 API 服务，窗口加载同源页面
-const { app, BrowserWindow, Menu, dialog } = require("electron");
+const { app, BrowserWindow, Menu, dialog, ipcMain } = require("electron");
 const path = require("node:path");
 const fs = require("node:fs");
 
@@ -35,12 +35,23 @@ async function createWindow() {
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
+      preload: fs.existsSync(path.join(__dirname, "preload.cjs"))
+        ? path.join(__dirname, "preload.cjs")
+        : undefined,
     },
   });
   Menu.setApplicationMenu(null);
   win.on("page-title-updated", (e) => e.preventDefault());
   win.loadURL(`http://localhost:${port}/`);
 }
+
+ipcMain.handle("acb:pick-folder", async () => {
+  const r = await dialog.showOpenDialog(win, {
+    title: "选择要注册的 Git 项目目录",
+    properties: ["openDirectory"],
+  });
+  return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
+});
 
 app.whenReady().then(createWindow);
 app.on("window-all-closed", () => app.quit());

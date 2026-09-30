@@ -13,6 +13,15 @@ function acbHome(): string {
 const REGISTRY = () => path.join(acbHome(), ".acb", "projects.json");
 const REPORTS = () => path.join(acbHome(), ".acb", "resume-reports.json");
 
+// 同一目录的不同拼写（8.3 短名、大小写、正反斜杠）视为同一路径，避免注册表重复
+async function sameDir(a: string, b: string): Promise<boolean> {
+  try {
+    return (await fs.realpath(a)) === (await fs.realpath(b));
+  } catch {
+    return path.resolve(a) === path.resolve(b);
+  }
+}
+
 export function storeDir(projectPath: string): string {
   return path.join(projectPath, ".acb", "store");
 }
@@ -29,14 +38,20 @@ export async function saveProjects(list: ProjectConfig[]): Promise<void> {
 
 export async function addProject(cfg: ProjectConfig): Promise<void> {
   const list = await listProjects();
-  const i = list.findIndex((p) => p.projectId === cfg.projectId || p.path.toLowerCase() === cfg.path.toLowerCase());
+  let i = -1;
+  for (let k = 0; k < list.length; k++) {
+    if (list[k].projectId === cfg.projectId || (await sameDir(list[k].path, cfg.path))) { i = k; break; }
+  }
   if (i >= 0) list[i] = cfg; else list.push(cfg);
   await saveProjects(list);
 }
 
 export async function findProject(projectIdOrPath: string): Promise<ProjectConfig | undefined> {
   const list = await listProjects();
-  return list.find((p) => p.projectId === projectIdOrPath || path.resolve(p.path) === path.resolve(projectIdOrPath));
+  for (const p of list) {
+    if (p.projectId === projectIdOrPath || (await sameDir(p.path, projectIdOrPath))) return p;
+  }
+  return undefined;
 }
 
 export async function removeProject(projectId: string): Promise<void> {

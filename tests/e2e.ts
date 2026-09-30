@@ -3,7 +3,7 @@ import { execSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { addProject, listProjects, loadResumeReports, saveResumeReport } from "../server/core/store.js";
+import { addProject, loadResumeReports, saveResumeReport } from "../server/core/store.js";
 import { createHandoff } from "../server/core/workflow.js";
 import { publishLocal, publishGithub } from "../server/core/transport.js";
 import { resumeFromArchive } from "../server/core/resume.js";

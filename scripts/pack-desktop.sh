@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # 打包桌面便携版：release/ACB-win64（ACB.exe 双击即用）
-# 前置：npm run build（生成 dist/）、npx tsc -p tsconfig.server.json（生成 dist-server/）
+# 自动构建：dist/（前端）与 dist-server/（服务端 JS），无需手动前置
 set -e
 cd "$(dirname "$0")/.."
+npm run build
+npx tsc -p tsconfig.server.json
 rm -rf release/ACB-win64 release/app
 mkdir -p release/app release/ACB-win64
 
@@ -19,7 +21,7 @@ mv release/ACB-win64/electron.exe release/ACB-win64/ACB.exe
 
 # 3. 应用本体
 mkdir -p release/ACB-win64/resources/app
-cp desktop/main.cjs release/app/server.cjs release/app/cli.cjs release/ACB-win64/resources/app/
+cp desktop/main.cjs desktop/preload.cjs release/app/server.cjs release/app/cli.cjs release/ACB-win64/resources/app/
 cp build/icon.ico build/icon-256.png release/ACB-win64/resources/app/
 cp -r dist release/ACB-win64/resources/app/dist
 printf '{ "name": "acb", "productName": "ACB", "version": "0.1.0", "main": "main.cjs" }' > release/ACB-win64/resources/app/package.json
