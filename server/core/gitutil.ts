@@ -17,6 +17,18 @@ export async function isGitRepo(dir: string): Promise<boolean> {
   try { await git(["rev-parse", "--is-inside-work-tree"], { cwd: dir }); return true; } catch { return false; }
 }
 
+/** 是否为可交接的 Git 工作区（.git 目录本身/裸仓库会返回 false） */
+export async function isWorkTree(dir: string): Promise<boolean> {
+  try { return (await git(["rev-parse", "--is-inside-work-tree"], { cwd: dir })).trim() === "true"; }
+  catch { return false; }
+}
+
+/** 注册目录归一化：误选 .git 子目录时自动改用其所在项目根目录 */
+export function resolveProjectDir(input: string): string {
+  const abs = path.resolve(input);
+  return path.basename(abs) === ".git" ? path.dirname(abs) : abs;
+}
+
 export interface GitStatus {
   branch: string | null;
   commit: string | null;

@@ -8,7 +8,7 @@ import {
 import { createHandoff } from "./core/workflow.js";
 import { publishLocal, publishGithub, listRemoteHandoffs } from "./core/transport.js";
 import { resumeFromArchive } from "./core/resume.js";
-import { isGitRepo, gitStatus } from "./core/gitutil.js";
+import { isWorkTree, resolveProjectDir, gitStatus } from "./core/gitutil.js";
 import type { ProjectConfig } from "../shared/types.js";
 
 const [, , cmd, ...args] = process.argv;
@@ -18,8 +18,8 @@ async function pickProject(idOrPath?: string): Promise<ProjectConfig> {
   if (idOrPath) {
     const p = all.find((x) => x.projectId === idOrPath || path.resolve(x.path) === path.resolve(idOrPath));
     if (p) return p;
-    const abs = path.resolve(idOrPath);
-    if (await isGitRepo(abs)) {
+    const abs = resolveProjectDir(idOrPath);
+    if (await isWorkTree(abs)) {
       const cfg: ProjectConfig = {
         projectId: "prj_" + Math.random().toString(16).slice(2, 10),
         name: path.basename(abs), path: abs, checks: [],
@@ -38,8 +38,8 @@ async function pickProject(idOrPath?: string): Promise<ProjectConfig> {
 async function main() {
   switch (cmd) {
     case "register": {
-      const p = path.resolve(args[0] ?? ".");
-      if (!(await isGitRepo(p))) throw new Error("目录不是 Git 仓库");
+      const p = resolveProjectDir(args[0] ?? ".");
+      if (!(await isWorkTree(p))) throw new Error("目录不是可用的 Git 工作区（裸仓库或 .git 目录无法交接；请选择包含代码的项目根目录）");
       const cfg: ProjectConfig = {
         projectId: "prj_" + Math.random().toString(16).slice(2, 10),
         name: args[1] ?? path.basename(p), path: p, checks: [],

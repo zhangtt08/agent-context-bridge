@@ -12,7 +12,7 @@ import {
 import { createHandoff } from "./core/workflow.js";
 import { publishLocal, publishGithub, listRemoteHandoffs, fetchRemoteMeta } from "./core/transport.js";
 import { resumeFromArchive, resumeFromGithub } from "./core/resume.js";
-import { gitStatus, isGitRepo, isExcluded } from "./core/gitutil.js";
+import { gitStatus, isGitRepo, isWorkTree, resolveProjectDir, isExcluded } from "./core/gitutil.js";
 import type { ProjectConfig } from "../shared/types.js";
 
 const app = express();
@@ -30,14 +30,17 @@ app.post("/api/projects", async (req, res) => {
   try {
     const { path: p, name } = req.body as { path: string; name?: string };
     if (!p) throw new Error("缺少 path");
-    const abs = path.resolve(p);
-    if (!(await exists_(abs))) throw new Error(`目录不存在: ${abs}`);
-    if (!(await isGitRepo(abs))) throw new Error("目录不是 Git 仓库（请先 git init 或选择已有仓库）");
-    const existing = await findProject(abs);
+    const dir = resolveProjectDir(p);
+    if (!(await exists_(dir))) throw new Error(`目录不存在: ${dir}`);
+    if (!(await isWorkTree(dir))) {
+      if (await isGitRepo(dir)) throw new Error("这是 Git 裸仓库或 .git 目录，没有可交接的工作区文件；请选择包含代码的项目根目录");
+      throw new Error("目录不是 Git 仓库（请先 git init 或选择已有仓库）");
+    }
+    const existing = await findProject(dir);
     const cfg: ProjectConfig = existing ?? {
       projectId: "prj_" + crypto.randomBytes(4).toString("hex"),
-      name: name ?? path.basename(abs),
-      path: abs,
+      name: name ?? path.basename(dir),
+      path: dir,
       checks: [],
     };
     if (name) cfg.name = name;
