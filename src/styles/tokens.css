@@ -1,0 +1,43 @@
+/* ACB 设计令牌 — 亮色为主（2026-09-30 验收定稿），暗色为切换主题 */
+
+:root {
+  --bg: #efece5;
+  --panel: #faf8f4;
+  --panel-2: #f1eee7;
+  --panel-3: #e6e2d8;
+  --line: #dcd7cc;
+  --line-strong: #c4beaf;
+  --ink: #20242c;
+  --muted: #5a626d;
+  --faint: #8a9098;
+  --amber: #c9821a;
+  --amber-dim: rgba(201, 130, 26, 0.1);
+  --green: #178a62;
+  --green-dim: rgba(23, 138, 98, 0.1);
+  --red: #c4453a;
+  --red-dim: rgba(196, 69, 58, 0.09);
+  --teal: #1d7e8c;
+  --teal-dim: rgba(29, 126, 140, 0.1);
+  --sans: "IBM Plex Sans", "Noto Sans SC", sans-serif;
+  --mono: "IBM Plex Mono", "Noto Sans SC", monospace;
+}
+
+[data-theme="dark"] {
+  --bg: #14161a;
+  --panel: #1c1f25;
+  --panel-2: #22262d;
+  --panel-3: #292e37;
+  --line: #2f353f;
+  --line-strong: #3d4450;
+  --ink: #e8ebef;
+  --muted: #98a1ad;
+  --faint: #6b7480;
+  --amber: #e8a33d;
+  --amber-dim: rgba(232, 163, 61, 0.12);
+  --green: #3fb68b;
+  --green-dim: rgba(63, 182, 139, 0.12);
+  --red: #e0584b;
+  --red-dim: rgba(224, 88, 75, 0.12);
+  --teal: #4fb3bf;
+  --teal-dim: rgba(79, 179, 191, 0.12);
+}

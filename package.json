@@ -1,0 +1,45 @@
+{
+  "name": "acb",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently -k \"tsx server/index.ts\" \"vite\"",
+    "server": "tsx server/index.ts",
+    "cli": "tsx server/cli.ts",
+    "test": "tsx tests/e2e.ts",
+    "build": "tsc -b && vite build",
+    "lint": "oxlint",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "express": "^5.2.1",
+    "lucide-react": "^1.49.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "react-router-dom": "^7.18.4",
+    "tar": "^7.5.22"
+  },
+  "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^24.13.3",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "@types/tar": "^6.1.13",
+    "@vitejs/plugin-react": "^6.1.1",
+    "concurrently": "^10.0.5",
+    "electron": "^44.5.1",
+    "electron-packager": "^17.1.2",
+    "oxlint": "^1.81.0",
+    "rcedit": "^5.0.2",
+    "tsx": "^4.23.15",
+    "typescript": "~6.0.2",
+    "vite": "^8.3.0"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true,
+    "electron@44.5.1": true,
+    "rcedit@5.0.2": true,
+    "rcedit@3.1.0": true
+  }
+}
