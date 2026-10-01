@@ -19,7 +19,7 @@ npm run dev        # 同时启动 API(:5174) 与前端(:5173)，浏览器打开 
 前置要求：Node.js 20.19+（推荐 22 LTS）、npm、git。GitHub 发布路径要求远端仓库已存在，
 且本机 git 凭据已配置（如 Git Credential Manager）。
 
-首次使用：在总览页输入本地 Git 仓库绝对路径注册项目，或点「一键创建示例项目」体验完整闭环。
+首次使用：把项目文件夹直接拖进软件窗口即可自动识别并注册（桌面版），也可点「选择文件夹」或输入本地 Git 仓库绝对路径；点「一键创建示例项目」体验完整闭环。
 
 **桌面便携版**：双击 `ACB.exe` 即可使用 Electron 桌面版（数据保存在本机 `~/.acb/`），
 详见 [README-DESKTOP.txt](README-DESKTOP.txt)。

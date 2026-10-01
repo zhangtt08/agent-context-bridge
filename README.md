@@ -41,7 +41,7 @@ npm install
 npm run dev        # starts the API on :5174 and the frontend on :5173
 ```
 
-Open http://localhost:5173, then either register a local git repository by absolute path on the Overview page, or click **one-click demo project** to experience the full loop.
+Open http://localhost:5173, then either **drag your project folder into the window** (desktop build auto-resolves the real path), click **choose folder**, register a local git repository by absolute path on the Overview page — or click **one-click demo project** to experience the full loop.
 
 CLI:
 

@@ -4,7 +4,7 @@ import {
   ChevronRight, Loader, RefreshCw, Plus, FolderGit2, FlaskConical, Trash2, FolderOpen,
 } from "lucide-react";
 import { Link } from "react-router-dom";
-import { PageHead, Panel, Topbar } from "../components/Shell";
+import { PageHead, Panel, Topbar, DropArea } from "../components/Shell";
 import { useProject } from "../state";
 import { api, fmtTime, type Overview } from "../api";
 
@@ -29,15 +29,23 @@ export default function Dashboard() {
     return () => clearInterval(t);
   }, [load]);
 
-  const register = async (seed: boolean) => {
+  const register = async (seed: boolean, pathOverride?: string) => {
+    const p = (pathOverride ?? regPath).trim();
     setBusy("register");
     try {
       if (seed) await api.seedDemo();
-      else await api.registerProject(regPath.trim());
+      else await api.registerProject(p);
       await refresh();
       setRegPath("");
     } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
     setBusy(null);
+  };
+
+  // 拖入文件夹 → 自动识别并注册（服务端会自动提升 .git、拒绝裸仓库并给出中文原因）
+  const dropRegister = async (p: string | null) => {
+    if (!p) { setErr("桌面版才能通过拖放识别文件夹；请点「选择文件夹」或手动输入路径"); return; }
+    setRegPath(p);
+    await register(false, p);
   };
 
   const pickFolder = async () => {
@@ -60,7 +68,8 @@ export default function Dashboard() {
       <div className="xs muted" style={{ marginBottom: 12 }}>
         三步上手：<b>① 注册项目</b> → <b>② 创建交接并发布</b>（GitHub 跨电脑 / 本地文件）→ <b>③ 另一台电脑恢复</b>后让 Agent 读接手入口。GitHub 跨电脑需先在侧边栏 <Link to="/settings" className="amber">项目设置</Link> 里配置远端。
       </div>
-      <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
+      <div className="drop-hint">把项目文件夹<b>直接拖进本页任意位置</b>，自动识别并注册（桌面版支持；也可点「选择文件夹」）</div>
+      <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
         <input
           value={regPath}
           onChange={(e) => setRegPath(e.target.value)}
@@ -84,13 +93,15 @@ export default function Dashboard() {
     return (
       <>
         <Topbar path={["本机项目库", "注册项目"]} />
-        <div className="content">
-          <PageHead kicker="Get Started" title="注册一个 Git 项目开始使用" sub="ACB 在本地运行：项目注册表保存在本机，任何代码都不会离开你的设备。" />
-          <Panel title="开始" icon={<FolderGit2 size={15} className="amber" />} corner>
-            {err && <div className="notice warn" style={{ marginBottom: 14 }}><TriangleAlert size={15} className="red" /><div className="xs red">{err}</div></div>}
-            {regForm}
-          </Panel>
-        </div>
+        <DropArea onPath={(p) => void dropRegister(p)} hint="松手，自动识别并注册这个文件夹">
+          <div className="content">
+            <PageHead kicker="Get Started" title="注册一个 Git 项目开始使用" sub="ACB 在本地运行：项目注册表保存在本机，任何代码都不会离开你的设备。" />
+            <Panel title="开始" icon={<FolderGit2 size={15} className="amber" />} corner>
+              {err && <div className="notice warn" style={{ marginBottom: 14 }}><TriangleAlert size={15} className="red" /><div className="xs red">{err}</div></div>}
+              {regForm}
+            </Panel>
+          </div>
+        </DropArea>
       </>
     );
   }
@@ -112,6 +123,7 @@ export default function Dashboard() {
           <button className="btn sm ghost" onClick={() => void load()}><RefreshCw size={13} /> 刷新</button>
         </>
       } />
+      <DropArea onPath={(p) => void dropRegister(p)} hint="松手，自动识别并注册这个文件夹">
       <div className="content">
         <PageHead
           kicker="Project Overview"
@@ -261,6 +273,7 @@ export default function Dashboard() {
           </>
         )}
       </div>
+      </DropArea>
     </>
   );
 }

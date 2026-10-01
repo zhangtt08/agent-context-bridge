@@ -1,12 +1,27 @@
 import { NavLink, useLocation } from "react-router-dom";
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, Package, CloudUpload, MonitorDown, Settings2,
   HardDrive, Sun, Moon, GitBranchPlus,
 } from "lucide-react";
 import { useProject } from "../state";
-import { api } from "../api";
-import type { ReactNode } from "react";
+import { api, pathFromDrop } from "../api";
+
+/** 拖放区：拖入文件后回调本机路径（桌面版）；拖悬时显示遮罩提示 */
+export function DropArea({ onPath, hint, children }: { onPath: (p: string | null) => void; hint: string; children: ReactNode }) {
+  const [drag, setDrag] = useState(false);
+  return (
+    <div
+      className="drop-wrap"
+      onDragOver={(e) => { e.preventDefault(); setDrag(true); }}
+      onDragLeave={(e) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDrag(false); }}
+      onDrop={(e) => { e.preventDefault(); setDrag(false); onPath(pathFromDrop(e.dataTransfer.files?.[0])); }}
+    >
+      {children}
+      {drag && <div className="drop-overlay">{hint}</div>}
+    </div>
+  );
+}
 
 export function Rail({ theme, onToggleTheme }: { theme: "light" | "dark"; onToggleTheme: () => void }) {
   const { active } = useProject();

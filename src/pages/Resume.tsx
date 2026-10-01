@@ -3,7 +3,7 @@ import {
   CheckCircle2, Wrench, RefreshCw, OctagonX, Check, Loader, FileText,
   MonitorCog, ListTree, Rocket, TriangleAlert, History, Laptop2, FolderOpen, Search,
 } from "lucide-react";
-import { PageHead, Panel, Topbar } from "../components/Shell";
+import { PageHead, Panel, Topbar, DropArea } from "../components/Shell";
 import { useProject } from "../state";
 import { api, fmtTime, type ResumeReport } from "../api";
 
@@ -62,6 +62,17 @@ export default function Resume() {
     if (id) setHandoffId(id);
   };
 
+  // 拖入交接包 → 自动切换到文件模式并填路径 + 提取交接 ID
+  const dropArchive = (p: string | null) => {
+    if (!p) { setErr("桌面版才能通过拖放识别文件；请点「选择文件」或手动输入路径"); return; }
+    if (!/\.acb\.tar\.gz$/i.test(p)) { setErr("拖入的应是 .acb.tar.gz 交接文件（在电脑 A 点「导出本地文件」得到）"); return; }
+    setErr(null);
+    setMode("file");
+    setFilePath(p);
+    const id = idFromArchivePath(p);
+    if (id) setHandoffId(id);
+  };
+
   const listRemote = async () => {
     setListing(true); setErr(null);
     try {
@@ -100,6 +111,7 @@ export default function Resume() {
         )}
 
         <div className="grid g-12">
+          <DropArea onPath={dropArchive} hint="松手，自动填入交接文件并提取 ID">
           <Panel title="发起恢复" icon={<Rocket size={15} className="amber" />} tag="resume" corner style={{ gridColumn: "span 5" }}>
             <div style={{ display: "flex", gap: 8, marginBottom: 14 }}>
               <button className={"btn sm " + (mode === "file" ? "primary" : "")} onClick={() => setMode("file")}>本地交接文件</button>
@@ -165,8 +177,9 @@ export default function Resume() {
             <button className="btn primary block" style={{ marginTop: 14 }} disabled={busy || !targetDir.trim() || (mode === "file" ? !filePath.trim() : mode === "github" ? !handoffId.trim() : !active)} onClick={() => void run()}>
               {busy ? <Loader size={15} className="spin" /> : <Rocket size={15} />} 校验并恢复
             </button>
-            <p className="xs faint" style={{ marginTop: 10 }}>恢复先校验后展开；目标目录非空时会被阻止（不覆盖已有工作）。</p>
+            <p className="xs faint" style={{ marginTop: 10 }}>恢复先校验后展开；目标目录非空时会被阻止（不覆盖已有工作）。把 .acb.tar.gz 交接文件拖到本页即可自动填路径与 ID。</p>
           </Panel>
+          </DropArea>
 
           <Panel title="最新报告" icon={<MonitorCog size={15} className="amber" />} tag={latest ? latest.reportId : "无报告"} style={{ gridColumn: "span 4" }}>
             {!latest && <div className="xs muted">尚无恢复报告。发起一次恢复后，Resume Report 会在此呈现。</div>}

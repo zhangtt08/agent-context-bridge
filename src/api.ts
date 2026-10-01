@@ -6,14 +6,21 @@ import type {
 
 const BASE = "/api";
 
-// Electron 桌面壳经 preload 注入的原生对话框（浏览器端不存在，用可选属性降级）
+// Electron 桌面壳经 preload 注入的原生对话框与拖放路径解析（浏览器端不存在，用可选属性降级）
 declare global {
   interface Window {
     acb?: {
       pickFolder?: () => Promise<string | null>;
       pickArchive?: () => Promise<string | null>;
+      getPathForFile?: (file: File) => string;
     };
   }
+}
+
+/** 从拖放的 File 取本机路径；非桌面版或取不到时返回 null */
+export function pathFromDrop(file: File | undefined | null): string | null {
+  const p = file && window.acb?.getPathForFile?.(file);
+  return p ? p : null;
 }
 
 async function j<T>(url: string, init?: RequestInit): Promise<T> {
