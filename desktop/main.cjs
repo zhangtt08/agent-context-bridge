@@ -31,7 +31,7 @@ async function createWindow() {
     title: "ACB — Agent Context Bridge",
     backgroundColor: "#efece5",
     // Windows 用 frame:false 自绘标题栏（三键内嵌页面）；macOS 保留系统红绿灯
-    frame: process.platform !== "darwin",
+    frame: process.platform === "darwin",
     autoHideMenuBar: true,
     icon: path.join(__dirname, "icon.ico"),
     webPreferences: {
