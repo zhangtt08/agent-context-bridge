@@ -30,6 +30,8 @@ async function createWindow() {
     minHeight: 700,
     title: "ACB — Agent Context Bridge",
     backgroundColor: "#efece5",
+    // Windows 用 frame:false 自绘标题栏（三键内嵌页面）；macOS 保留系统红绿灯
+    frame: process.platform !== "darwin",
     autoHideMenuBar: true,
     icon: path.join(__dirname, "icon.ico"),
     webPreferences: {
@@ -42,6 +44,9 @@ async function createWindow() {
   });
   Menu.setApplicationMenu(null);
   win.on("page-title-updated", (e) => e.preventDefault());
+  // 最大化状态变化推给渲染层，驱动自绘标题栏的最大化/还原图标切换
+  win.on("maximize", () => win?.webContents.send("acb:window-maximized", true));
+  win.on("unmaximize", () => win?.webContents.send("acb:window-maximized", false));
   win.loadURL(`http://localhost:${port}/`);
 }
 
@@ -61,6 +66,20 @@ ipcMain.handle("acb:pick-archive", async () => {
   });
   return r.canceled || r.filePaths.length === 0 ? null : r.filePaths[0];
 });
+
+// 自绘标题栏的窗口三键（close 走系统关闭流程，与标题栏 X 行为一致）
+ipcMain.handle("acb:window-minimize", () => win?.minimize());
+ipcMain.handle("acb:window-toggle-maximize", () => {
+  if (!win) return false;
+  if (win.isMaximized()) {
+    win.unmaximize();
+    return false;
+  }
+  win.maximize();
+  return true;
+});
+ipcMain.handle("acb:window-close", () => win?.close());
+ipcMain.handle("acb:window-is-maximized", () => !!win?.isMaximized());
 
 app.whenReady().then(createWindow);
 app.on("window-all-closed", () => app.quit());

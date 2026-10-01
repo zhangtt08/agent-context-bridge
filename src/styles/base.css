@@ -77,6 +77,23 @@ body {
 .topbar .crumb .sep { color: var(--faint); }
 .topbar .right { margin-left: auto; display: flex; align-items: center; gap: 10px; }
 
+/* 自绘标题栏（frameless）：topbar 即拖拽区，右侧内嵌窗口三键 */
+.topbar { -webkit-app-region: drag; user-select: none; }
+.topbar button, .topbar a, .topbar input, .topbar select { -webkit-app-region: no-drag; }
+.win-controls {
+  align-self: stretch; display: flex;
+  /* 抵消 topbar 的 padding，让三键贴住窗口右上角、占满标题栏全高 */
+  margin: -12px -28px -12px 0;
+}
+.win-btn {
+  width: 44px; border: 0; border-radius: 0; padding: 0;
+  display: grid; place-items: center;
+  background: transparent; color: var(--muted); cursor: pointer;
+}
+.win-btn:hover { background: rgba(0, 0, 0, 0.07); color: var(--ink); }
+[data-theme="dark"] .win-btn:hover { background: rgba(255, 255, 255, 0.09); }
+.win-btn.close:hover { background: #cf3f4f; color: #fff; }
+
 .content { padding: 28px; max-width: 1460px; }
 
 .page-head { display: flex; align-items: flex-end; gap: 20px; margin-bottom: 24px; }

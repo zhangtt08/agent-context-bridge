@@ -6,4 +6,16 @@ contextBridge.exposeInMainWorld("acb", {
   pickArchive: () => ipcRenderer.invoke("acb:pick-archive"),
   // 拖放的 File 对象转本机真实路径（Electron ≥32 移除了 File.path，官方推荐 webUtils）
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  // 自绘标题栏的窗口三键（frameless 窗口用）
+  windowControls: {
+    minimize: () => ipcRenderer.invoke("acb:window-minimize"),
+    toggleMaximize: () => ipcRenderer.invoke("acb:window-toggle-maximize"),
+    close: () => ipcRenderer.invoke("acb:window-close"),
+    isMaximized: () => ipcRenderer.invoke("acb:window-is-maximized"),
+    onMaximizedChange: (cb) => {
+      const handler = (_e, maximized) => cb(maximized);
+      ipcRenderer.on("acb:window-maximized", handler);
+      return () => ipcRenderer.removeListener("acb:window-maximized", handler);
+    },
+  },
 });

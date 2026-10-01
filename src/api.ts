@@ -13,8 +13,21 @@ declare global {
       pickFolder?: () => Promise<string | null>;
       pickArchive?: () => Promise<string | null>;
       getPathForFile?: (file: File) => string;
+      /** 自绘标题栏的窗口三键（frameless 窗口用，浏览器端不存在） */
+      windowControls?: {
+        minimize: () => Promise<void>;
+        toggleMaximize: () => Promise<boolean>;
+        close: () => Promise<void>;
+        isMaximized: () => Promise<boolean>;
+        onMaximizedChange: (cb: (maximized: boolean) => void) => () => void;
+      };
     };
   }
+}
+
+/** 桌面壳注入的窗口三键；浏览器端返回 undefined */
+export function windowControls(): NonNullable<Window["acb"]>["windowControls"] {
+  return window.acb?.windowControls;
 }
 
 /** 从拖放的 File 取本机路径；非桌面版或取不到时返回 null */

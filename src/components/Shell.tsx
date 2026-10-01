@@ -2,10 +2,10 @@ import { NavLink, useLocation } from "react-router-dom";
 import { useEffect, useState, type ReactNode } from "react";
 import {
   LayoutDashboard, Package, CloudUpload, MonitorDown, Settings2,
-  HardDrive, Sun, Moon, GitBranchPlus,
+  HardDrive, Sun, Moon, GitBranchPlus, Minus, Square, Copy, X,
 } from "lucide-react";
 import { useProject } from "../state";
-import { api, pathFromDrop } from "../api";
+import { api, pathFromDrop, windowControls } from "../api";
 
 /** 拖放区：拖入文件后回调本机路径（桌面版）；拖悬时显示遮罩提示 */
 export function DropArea({ onPath, hint, children }: { onPath: (p: string | null) => void; hint: string; children: ReactNode }) {
@@ -67,9 +67,49 @@ export function Rail({ theme, onToggleTheme }: { theme: "light" | "dark"; onTogg
   );
 }
 
-export function Topbar({ path, actions }: { path: string[]; actions?: ReactNode }) {
+/** 窗口三键：最小化/最大化(还原)/关闭。仅在 Electron 桌面壳（frameless）中渲染 */
+function WindowControls() {
+  const controls = windowControls();
+  const [maximized, setMaximized] = useState(false);
+
+  useEffect(() => {
+    if (!controls) return;
+    let alive = true;
+    void controls.isMaximized().then((v) => { if (alive) setMaximized(v); }).catch(() => { /* 降级为默认图标 */ });
+    const unsubscribe = controls.onMaximizedChange(setMaximized);
+    return () => { alive = false; unsubscribe(); };
+  }, [controls]);
+
+  if (!controls || /Mac/i.test(navigator.platform)) return null;
+
   return (
-    <header className="topbar">
+    <div className="win-controls">
+      <button type="button" className="win-btn" title="最小化" onClick={() => void controls.minimize().catch(() => {})}>
+        <Minus size={15} />
+      </button>
+      <button
+        type="button"
+        className="win-btn"
+        title={maximized ? "向下还原" : "最大化"}
+        onClick={() => void controls.toggleMaximize().catch(() => {})}
+      >
+        {maximized ? <Copy size={13} /> : <Square size={12} />}
+      </button>
+      <button type="button" className="win-btn close" title="关闭" onClick={() => void controls.close().catch(() => {})}>
+        <X size={15} />
+      </button>
+    </div>
+  );
+}
+
+export function Topbar({ path, actions }: { path: string[]; actions?: ReactNode }) {
+  // frameless 窗口：topbar 即标题栏，双击空白处切换最大化（双击按钮等控件时不触发）
+  const onDoubleClick = (e: React.MouseEvent<HTMLElement>) => {
+    if ((e.target as HTMLElement).closest("button, a, input, select")) return;
+    void windowControls()?.toggleMaximize().catch(() => {});
+  };
+  return (
+    <header className="topbar" onDoubleClick={onDoubleClick}>
       <div className="crumb">
         <HardDrive size={14} />
         {path.map((seg, i) => (
@@ -83,6 +123,7 @@ export function Topbar({ path, actions }: { path: string[]; actions?: ReactNode 
         {actions}
         <NavCreateButton />
       </div>
+      <WindowControls />
     </header>
   );
 }
