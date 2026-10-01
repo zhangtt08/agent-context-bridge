@@ -9,6 +9,7 @@
     "cli": "tsx server/cli.ts",
     "test": "tsx tests/e2e.ts",
     "build": "tsc -b && vite build",
+    "typecheck": "tsc -b && tsc -p tsconfig.server.json --noEmit",
     "lint": "oxlint",
     "preview": "vite preview"
   },

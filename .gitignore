@@ -1,26 +1,39 @@
-# Logs
-logs
+# ---- 依赖 ----
+node_modules/
+
+# ---- 构建产物（全部可由 npm run build / scripts/pack-desktop.sh 重新生成）----
+dist*/
+release/
+*.tsbuildinfo
+tsconfig.tsbuildinfo
+
+# ---- 本地凭据：永不入库 ----
+.env
+.env.*
+!.env.example
+
+# ---- 日志 / 临时 / 校验截图 ----
+logs/
 *.log
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
+*.tmp
+*.bak
+*~
+.acb-extract-*/
+.shots/
 
-node_modules
-dist
-dist-server
-dist-ssr
-*.local
-release
+# ---- ACB 自身的交接存储（内含被交接项目的代码副本，永不入库）----
+.acb/
+*.acb.tar.gz
 
-# Editor directories and files
+# ---- 编辑器 / 系统 ----
 .vscode/*
 !.vscode/extensions.json
-.idea
+.idea/
 .DS_Store
 *.suo
 *.ntvs*
 *.njsproj
 *.sln
 *.sw?
+
+# 注意：tests/ 与 build/（桌面图标源文件）是真实资产，必须入库，勿在此忽略。

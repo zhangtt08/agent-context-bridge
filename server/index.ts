@@ -11,15 +11,29 @@ import {
 } from "./core/store.js";
 import { createHandoff } from "./core/workflow.js";
 import { publishLocal, publishGithub, listRemoteHandoffs, fetchRemoteMeta } from "./core/transport.js";
-import { resumeFromArchive, resumeFromGithub } from "./core/resume.js";
-import { gitStatus, isGitRepo, isWorkTree, resolveProjectDir, isExcluded } from "./core/gitutil.js";
-import type { ProjectConfig } from "../shared/types.js";
+import { resumeFromArchive, resumeFromGithub, previewArchiveResume, previewGithubResume } from "./core/resume.js";
+import { buildPreview } from "./core/preview.js";
+import { startJob, getJob } from "./core/jobs.js";
+import { verifyPackage } from "./core/package.js";
+import { gitStatus, isGitRepo, isWorkTree, resolveProjectDir, isExcluded, excludePolicySummary } from "./core/gitutil.js";
+import type { ProjectConfig, ConflictPolicy } from "../shared/types.js";
 
 const app = express();
 app.use(express.json({ limit: "4mb" }));
 
 const err = (res: express.Response, e: unknown, code = 400) =>
   res.status(code).json({ error: e instanceof Error ? e.message : String(e) });
+
+/** 错误必须给得出下一步：把最常见的几种失败翻成动作 */
+function remedy(msg: string): string | undefined {
+  if (/不是 Git 仓库|无法交接|裸仓库/.test(msg)) return "在总览页重新选择一个包含代码的项目根目录（不是 .git 目录），或先 git init";
+  if (/工作区持续发生变化/.test(msg)) return "停掉 watch 模式的构建/测试，或先提交一次，再重新创建交接";
+  if (/目录不存在|不存在:/.test(msg)) return "检查路径是否被移动或改名；桌面版可把文件夹直接拖进窗口";
+  if (/大小写/.test(msg)) return "先在源仓库把冲突路径改名，再创建交接";
+  if (/凭据|remote|远端/.test(msg)) return "在项目设置里填写已存在的远端地址，或改用「导出本地文件」走 U 盘路径";
+  if (/完整性|清单/.test(msg)) return "回源电脑重新创建并导出交接；封存后的包按设计不可原地修改";
+  return undefined;
+}
 
 // ---------- 项目 ----------
 app.get("/api/projects", async (_req, res) => {
@@ -94,7 +108,7 @@ app.get("/api/projects/:id/overview", async (req, res) => {
         staged: realEntries.filter((e) => e.x !== " " && e.x !== "?").length,
         unstaged: realEntries.filter((e) => e.y === "M" || e.y === "D").length,
         untracked: realEntries.filter((e) => e.x === "?").length,
-        excluded: [".env*", "node_modules/", "dist/", ".acb/"],
+        excluded: excludePolicySummary(),
         total: realEntries.length,
         env: { os: `${process.platform}`, node: process.version },
       },
@@ -113,11 +127,46 @@ app.get("/api/projects/:id/overview", async (req, res) => {
         snapshot: `${r.state.baseline.commit?.slice(0, 7) ?? "无"} + ${r.state.changes.length} 文件`,
         publish: latestPublication(r),
         verify: verifySummary(r),
-        integrity: { label: "完整", tone: "green" },
+        integrity: { label: "未核对", tone: "" },
       })),
       forksList: forks,
     });
   } catch (e) { err(res, e); }
+});
+
+/** 单个交接的包完整性实测（打开详情页时才跑，避免总览页逐包扫盘） */
+app.get("/api/handoffs/:id/integrity", async (req, res) => {
+  try {
+    const projects = await listProjects();
+    for (const p of projects) {
+      const rec = await getHandoffRecord(p.path, req.params.id);
+      if (!rec) continue;
+      const c = await verifyPackage(rec.packageDir);
+      return res.json({
+        handoffId: rec.handoffId, ok: c.ok, entryCount: c.entryCount, verifiedCount: c.verifiedCount,
+        broken: c.broken.slice(0, 20),
+        label: c.ok ? `完整 · ${c.verifiedCount}/${c.entryCount}` : `异常 · ${c.verifiedCount}/${c.entryCount}`,
+      });
+    }
+    return err(res, new Error("交接不存在"), 404);
+  } catch (e) { err(res, e); }
+});
+
+/** 打包前审阅清单：只探测磁盘，不读内容、不写文件 */
+app.get("/api/projects/:id/preview", async (req, res) => {
+  try {
+    const p = await findProject(req.params.id);
+    if (!p) return err(res, new Error("项目未注册"), 404);
+    if (!(await isGitRepo(p.path))) return err(res, new Error(`项目目录已不是 Git 仓库：${p.path}（在总览页重新注册，或确认它是否被移动/改名）`));
+    res.json(await buildPreview(p));
+  } catch (e) { err(res, e); }
+});
+
+/** 长任务进度：打包与还原都走这里，大仓库不再是"点了没反应" */
+app.get("/api/jobs/:id", (req, res) => {
+  const j = getJob(req.params.id);
+  if (!j) return err(res, new Error("任务不存在或已过期（20 分钟后清理）；重新发起一次即可，已封存的交接不受影响"), 404);
+  res.json(j);
 });
 
 function groupTasks(records: Awaited<ReturnType<typeof loadHandoffRecords>>) {
@@ -166,16 +215,24 @@ function verifySummary(r: Awaited<ReturnType<typeof loadHandoffRecords>>[number]
 }
 
 // ---------- 创建交接 ----------
+// async=true 时立即返回 jobId，进度走 GET /api/jobs/:id —— 大仓库不再"点了没反应"。
 app.post("/api/projects/:id/handoffs", async (req, res) => {
   try {
     const p = await findProject(req.params.id);
     if (!p) return err(res, new Error("项目未注册"), 404);
-    const { taskName, claimText, claimEvidence, nextStep, runChecks, parentHandoffIds } = req.body as {
-      taskName: string; claimText?: string; claimEvidence?: string; nextStep?: string; runChecks?: boolean; parentHandoffIds?: string[];
+    const { taskName, claimText, claimEvidence, nextStep, runChecks, parentHandoffIds, async: asJob } = req.body as {
+      taskName: string; claimText?: string; claimEvidence?: string; nextStep?: string;
+      runChecks?: boolean; parentHandoffIds?: string[]; async?: boolean;
     };
-    if (!taskName) throw new Error("缺少任务名");
-    const result = await createHandoff(p, { taskName, claimText, claimEvidence, nextStep, runChecks, parentHandoffIds });
-    res.json(result);
+    if (!taskName || !taskName.trim()) throw new Error("缺少任务名：写一句另一台电脑上的 Agent 能看懂的话，例如「把登录超时从 3s 调到 8s 并补重试」");
+    if (!(await isGitRepo(p.path))) throw new Error(`项目目录已不是 Git 仓库：${p.path}（在总览页重新注册，或确认它是否被移动/改名）`);
+    const input = { taskName: taskName.trim(), claimText, claimEvidence, nextStep, runChecks, parentHandoffIds };
+
+    if (asJob) {
+      const jobId = startJob("capture", async (report) => createHandoff(p, { ...input, onProgress: report }), remedy);
+      return res.json({ jobId });
+    }
+    res.json(await createHandoff(p, input));
   } catch (e) { err(res, e); }
 });
 
@@ -197,7 +254,7 @@ app.get("/api/handoffs/:id", async (req, res) => {
 
 app.post("/api/handoffs/:id/publish", async (req, res) => {
   try {
-    const { target, remote } = req.body as { target: "github" | "local"; remote?: string };
+    const { target, remote, outPath } = req.body as { target: "github" | "local"; remote?: string; outPath?: string };
     const projects = await listProjects();
     for (const p of projects) {
       const rec = await getHandoffRecord(p.path, req.params.id);
@@ -205,17 +262,17 @@ app.post("/api/handoffs/:id/publish", async (req, res) => {
       let receipt;
       if (target === "github") {
         const r = remote ?? p.githubRemote;
-        if (!r) return err(res, new Error("未配置 GitHub 远端（在项目配置中填写 remote URL）"));
+        if (!r) return err(res, new Error("未配置 GitHub 远端：在项目设置里填一个已存在的仓库地址（git ls-remote 能列出来的那个），或改用「导出本地文件」走 U 盘路径"));
         ({ receipt } = await publishGithub(p.path, rec, r));
       } else {
-        const out = path.join(os.homedir(), "Downloads", `acb-${rec.handoffId}.acb.tar.gz`);
+        const out = outPath?.trim() || path.join(os.homedir(), "Downloads", `acb-${rec.handoffId}.acb.tar.gz`);
         ({ receipt } = await publishLocal(rec, out));
       }
       rec.publications.push(receipt);
       await saveHandoffRecord(p.path, rec);
       return res.json({ receipt, record: rec });
     }
-    return err(res, new Error("交接不存在"), 404);
+    return err(res, new Error(`交接不存在：${req.params.id}（确认本机注册表里还有这个项目；跨电脑请用交接文件或 GitHub 交接分支恢复）`), 404);
   } catch (e) { err(res, e); }
 });
 
@@ -237,38 +294,91 @@ app.get("/api/remotes/handoffs", async (req, res) => {
 });
 
 // ---------- 恢复 ----------
+interface ResumeBody {
+  mode: "file" | "remote" | "github";
+  filePath?: string; projectId?: string; remote?: string; handoffId?: string;
+  targetDir: string; onConflict?: ConflictPolicy; archiveSha256?: string; async?: boolean;
+}
+
+/** 解析恢复来源：本机封存目录 / 交接文件 / 远端分支，三处共用一段，避免"预览"和"恢复"认不同的源 */
+async function resolveResumeSource(b: ResumeBody): Promise<{ input: { filePath?: string; packageDir?: string; handoffId?: string; targetDir: string; source: string; archiveSha256?: string; onConflict?: ConflictPolicy }; github?: { remote: string; handoffId: string } }> {
+  if (!b.targetDir?.trim()) throw new Error("缺少目标目录：写一个空的目录路径（推荐新目录，ACB 默认不覆盖已有工作）");
+  const targetDir = resolveProjectDir(b.targetDir.trim());
+  if (b.mode === "file") {
+    if (!b.filePath?.trim()) throw new Error("需要交接文件路径：点「选择文件」，或把 .acb.tar.gz 直接拖进本页");
+    return { input: { filePath: b.filePath.trim(), handoffId: b.handoffId, targetDir, source: b.filePath.trim(), archiveSha256: b.archiveSha256, onConflict: b.onConflict } };
+  }
+  if (b.mode === "github") {
+    const p = b.projectId ? await findProject(b.projectId) : undefined;
+    const r = b.remote?.trim() || p?.githubRemote;
+    if (!r) throw new Error("未配置 GitHub 远端：在「项目设置」填已存在的仓库地址，或在本页直接输入远端 URL");
+    if (!b.handoffId?.trim()) throw new Error("远端恢复需要交接 ID：点「查看该仓库的交接」从远端选一个");
+    return { input: { targetDir, handoffId: b.handoffId, source: `${r} · acb/handoff/${b.handoffId}`, onConflict: b.onConflict }, github: { remote: r, handoffId: b.handoffId.trim() } };
+  }
+  if (!b.projectId) throw new Error("本机封存恢复需要选择项目");
+  const p = await findProject(b.projectId);
+  if (!p) throw new Error(`项目未注册：${b.projectId}（在总览页重新注册该项目目录）`);
+  const hid = b.handoffId?.trim() || (await loadHandoffRecords(p.path))[0]?.handoffId;
+  if (!hid) throw new Error("本机封存存储里没有交接：跨电脑请用「本地交接文件」或「GitHub 交接分支」；先在这台电脑创建一次交接才会有封存记录");
+  const rec = await getHandoffRecord(p.path, hid);
+  if (!rec) throw new Error(`本机封存存储里没有该交接 ${hid}：跨电脑请用交接文件或 GitHub 交接分支恢复`);
+  return { input: { packageDir: rec.packageDir, handoffId: hid, targetDir, source: `本机存储 · ${p.name}/${hid}`, onConflict: b.onConflict } };
+}
+
+/** 还原前的差异预览：整包校验 + 与目标目录比对，不写任何文件 */
+app.post("/api/resume/preview", async (req, res) => {
+  try {
+    const b = req.body as ResumeBody;
+    const { input, github } = await resolveResumeSource(b);
+    if (github) {
+      const pre = await previewGithubResume({ ...github, targetDir: input.targetDir });
+      const s = pre.state;
+      return res.json({
+        github: pre,
+        preview: s ? {
+          handoffId: s.handoffId, projectName: s.projectName, taskName: s.taskName, sealedAt: s.createdAt,
+          source: input.source, targetDir: input.targetDir, integrityOk: true,
+          entryCount: s.changes.length, verifiedCount: s.changes.length, broken: [],
+          packageDigest: "远端分支（无本地清单）", protocolVersion: s.protocolVersion,
+          totalBytes: 0, willWrite: s.changes.filter((c) => c.status !== "deleted").length,
+          willDelete: s.changes.filter((c) => c.status === "deleted" || c.status === "renamed").length,
+          stagedCount: s.changes.filter((c) => c.staged).length,
+          symlinkCount: s.changes.filter((c) => c.mode === "120000").length,
+          baselineAvailable: true, conflicts: [],
+          alerts: pre.reachable
+            ? [{ level: "提示" as const, title: "远端分支恢复按检查点树物化", detail: "GitHub 路径的冲突判定在恢复时执行（需要先 fetch 才能比对内容）。", action: "选一个空目录最稳；非空目录会先拒绝，再让你选「跳过已存在」或「覆盖」。" }]
+            : [{ level: "阻塞" as const, title: "远端分支不可达", detail: pre.detail, action: "确认远端地址与交接 ID，或先在源电脑完成发布。" }],
+          sourceEnv: { os: s.environment.os, runtime: s.environment.runtime },
+          archiveInfo: `远端 · ${pre.detail}`,
+        } : null,
+      });
+    }
+    const preview = await previewArchiveResume({ ...input, source: input.source });
+    res.json({ preview });
+  } catch (e) { err(res, e); }
+});
+
 app.post("/api/resume", async (req, res) => {
   try {
-    const { mode, filePath, projectId, remote, handoffId, targetDir } = req.body as {
-      mode: "file" | "remote" | "github"; filePath?: string; projectId?: string; remote?: string; handoffId?: string; targetDir: string;
-    };
-    if (!targetDir) throw new Error("缺少目标目录");
-    if (mode === "file") {
-      if (!filePath || !handoffId) throw new Error("文件恢复需要 filePath 与 handoffId");
-      const { report, state } = await resumeFromArchive({ filePath, handoffId, targetDir, source: filePath });
-      await saveResumeReport(report);
-      return res.json({ report, taskName: state.taskName });
+    const b = req.body as ResumeBody;
+    const { input, github } = await resolveResumeSource(b);
+
+    if (b.async) {
+      const jobId = startJob("restore", async (report) => {
+        const r = github
+          ? await resumeFromGithub({ ...github, targetDir: input.targetDir, onConflict: input.onConflict, onProgress: report })
+          : await resumeFromArchive({ ...input, onProgress: report });
+        await saveResumeReport(r.report);
+        return { report: r.report, taskName: r.state.taskName };
+      }, remedy);
+      return res.json({ jobId });
     }
-    if (mode === "github") {
-      if (!handoffId) throw new Error("远端恢复需要 handoffId");
-      const p = projectId ? await findProject(projectId) : undefined;
-      const r = remote ?? p?.githubRemote;
-      if (!r) throw new Error("未配置 GitHub 远端");
-      const { report, state } = await resumeFromGithub({ remote: r, handoffId, targetDir });
-      await saveResumeReport(report);
-      return res.json({ report, taskName: state.taskName });
-    }
-    // remote 模式：从本机封存存储恢复（未指定交接 ID 时默认最新封存）
-    if (!projectId) throw new Error("远端恢复需要 projectId");
-    const p = await findProject(projectId);
-    if (!p) throw new Error("项目未注册");
-    const hid = handoffId ?? (await loadHandoffRecords(p.path))[0]?.handoffId;
-    if (!hid) throw new Error("本机存储中没有交接（跨电脑请使用交接文件或 GitHub 交接分支恢复）");
-    const rec = await getHandoffRecord(p.path, hid);
-    if (!rec) throw new Error("本机存储中没有该交接（跨电脑请使用交接文件或 GitHub 交接分支恢复）");
-    const { report, state } = await resumeFromArchive({ packageDir: rec.packageDir, handoffId: hid, targetDir, source: `本机存储 · ${p.name}/${hid}` });
-    await saveResumeReport(report);
-    return res.json({ report, taskName: state.taskName });
+
+    const r = github
+      ? await resumeFromGithub({ ...github, targetDir: input.targetDir, onConflict: input.onConflict })
+      : await resumeFromArchive(input);
+    await saveResumeReport(r.report);
+    res.json({ report: r.report, taskName: r.state.taskName });
   } catch (e) { err(res, e); }
 });
 

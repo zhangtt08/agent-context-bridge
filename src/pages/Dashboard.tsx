@@ -66,7 +66,7 @@ export default function Dashboard() {
   const regForm = (
     <>
       <div className="xs muted" style={{ marginBottom: 12 }}>
-        三步上手：<b>① 注册项目</b> → <b>② 创建交接并发布</b>（GitHub 跨电脑 / 本地文件）→ <b>③ 另一台电脑恢复</b>后让 Agent 读接手入口。GitHub 跨电脑需先在侧边栏 <Link to="/settings" className="amber">项目设置</Link> 里配置远端。
+        一条流程走完交接：<b>① 注册项目</b> → <b>② 审阅清单</b>（看清带什么、排除了什么、为什么）→ <b>③ 打包封存</b>（有进度）→ <b>④ 交接</b>（导出 .acb.tar.gz 或推 GitHub 交接分支）→ <b>⑤ 另一台电脑还原</b>（先预览差异与冲突）→ <b>⑥ 校验回执</b>（指纹 + 文件数）。先到 <Link to="/create" className="amber">创建交接</Link> 那一步，注册完就能审清单。
       </div>
       <div className="drop-hint">把项目文件夹<b>直接拖进本页任意位置</b>，自动识别并注册（桌面版支持；也可点「选择文件夹」）</div>
       <div style={{ display: "flex", gap: 10, alignItems: "center", marginTop: 10 }}>
@@ -206,13 +206,13 @@ export default function Dashboard() {
                 <div className="li-row" style={{ padding: "10px 0" }}><span className="badge green">已暂存 {ov.dirty.staged}</span><span className="small muted">与 HEAD 不同的暂存改动</span></div>
                 <div className="li-row" style={{ padding: "10px 0" }}><span className="badge amber">未暂存 {ov.dirty.unstaged}</span><span className="small muted">工作区修改（含删除）</span></div>
                 <div className="li-row" style={{ padding: "10px 0" }}><span className="badge teal">新文件 {ov.dirty.untracked}</span><span className="small muted">未跟踪文件</span></div>
-                <div className="li-row" style={{ padding: "10px 0" }}><span className="badge">排除 {ov.dirty.excluded.length} 类</span><span className="small muted">{ov.dirty.excluded.join("、")}（纳入策略）</span></div>
+                <div className="li-row" style={{ padding: "10px 0" }}><span className="badge">排除 {ov.dirty.excluded.length} 类</span><span className="small muted">{ov.dirty.excluded.slice(0, 4).map((e) => e.label).join("、")} 等（纳入策略）</span></div>
                 <div className="notice warn" style={{ marginTop: 14 }}>
                   <TriangleAlert size={15} className="red" />
-                  <div className="xs"><span className="red" style={{ fontWeight: 600 }}>.env 等凭据不在纳入范围。</span><span className="muted">必需但未纳入的文件会列入恢复要求，接收端需本机补齐。</span></div>
+                  <div className="xs"><span className="red" style={{ fontWeight: 600 }}>.env 等凭据不在纳入范围。</span><span className="muted">必需但未纳入的文件会列入恢复要求，接收端需本机补齐。创建前先看「审阅清单」。</span></div>
                 </div>
                 <button className="btn primary block" style={{ marginTop: 16 }} onClick={() => location.assign("#/create")}>
-                  <GitBranchPlus size={15} /> 以当前状态创建交接
+                  <GitBranchPlus size={15} /> 审阅清单并创建交接
                 </button>
               </Panel>
 

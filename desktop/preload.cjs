@@ -2,6 +2,9 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 contextBridge.exposeInMainWorld("acb", {
+  // 主进程的真实平台：页面据此决定要不要自绘窗口三键
+  // （darwin 用系统红绿灯，win32/linux 无边框 + 界面内三键）
+  platform: process.platform,
   pickFolder: () => ipcRenderer.invoke("acb:pick-folder"),
   pickArchive: () => ipcRenderer.invoke("acb:pick-archive"),
   // 拖放的 File 对象转本机真实路径（Electron ≥32 移除了 File.path，官方推荐 webUtils）

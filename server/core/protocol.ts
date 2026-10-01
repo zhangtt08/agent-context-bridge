@@ -1,5 +1,6 @@
 // Protocol Module：Project State 组装、校验、Markdown 接手入口渲染
 import type { HandoffRecord, ProjectState, VerificationRecord, ResumeReport } from "../../shared/types.js";
+import { exclusionInfo } from "./gitutil.js";
 
 export function validateState(s: ProjectState): string[] {
   const errs: string[] = [];
@@ -44,6 +45,11 @@ export function renderEntryMarkdown(rec: HandoffRecord): string {
   L.push("");
 
   L.push("## 三、已有证据与局限", "");
+  if (s.observations.length) {
+    L.push("观测（来自 Git / 文件系统 / 环境的事实）：", "");
+    for (const o of s.observations) L.push(`- [${o.source} · ${o.scope}] ${o.text}`);
+    L.push("");
+  }
   if (s.verifications.length === 0) {
     L.push("- 本次未执行任何检查（状态：未执行）。", "");
   } else {
@@ -58,7 +64,21 @@ export function renderEntryMarkdown(rec: HandoffRecord): string {
     L.push("", "以上为源端历史证据，仅证明该检查在该快照与环境上的结果；接收端未复验前保持未验证状态。", "");
   }
 
-  L.push("## 四、未完成与阻塞", "");
+  L.push("## 四、包内容与排除清单", "");
+  L.push(`- 包内条目：${rec.manifest.entries.length} 个文件 · 包摘要 \`${rec.manifest.packageDigest.slice(0, 24)}…\``);
+  if (s.excluded.length) {
+    L.push("- 已排除（含原因，接收端不必等待它们出现）：", "");
+    for (const e of s.excluded) L.push(`  - ${e} —— ${exclusionInfo(e)?.reason ?? "按纳入策略排除"}`);
+  } else {
+    L.push("- 无排除项。", "");
+  }
+  const links = s.changes.filter((c) => c.mode === "120000").map((c) => c.path);
+  const execs = s.changes.filter((c) => c.mode === "100755").map((c) => c.path);
+  if (links.length) L.push(`- 符号链接 ${links.length} 个（按链接目标保存）：${links.slice(0, 10).join("、")}`);
+  if (execs.length) L.push(`- 可执行位 ${execs.length} 个（随文件模式 100755 保留）：${execs.slice(0, 10).join("、")}`);
+  L.push("");
+
+  L.push("## 五、未完成与阻塞", "");
   const openClaims = s.claims.filter((c) => !c.evidence);
   L.push(...(openClaims.length ? openClaims.map((c) => `- 待确认：${c.text}`) : ["- 无待确认声明。"]));
   if (s.recoveryRequirements.length) {
@@ -66,16 +86,20 @@ export function renderEntryMarkdown(rec: HandoffRecord): string {
   }
   L.push("");
 
-  L.push("## 五、关键决策与声明", "");
+  L.push("## 六、关键决策与声明", "");
   L.push(...(s.claims.length ? s.claims.map((c) => `- [${c.sessionId} @ ${c.at}] ${c.text}${c.evidence ? `（证据：${c.evidence}）` : ""}`) : ["- 无声明记录。"]));
   L.push("");
 
-  L.push("## 六、建议下一步", "");
+  L.push("## 七、建议下一步", "");
   const next = s.claims.find((c) => c.nextStep)?.nextStep;
   L.push(next ? `- ${next}` : "- 无；请接手 Agent 阅读状态后自行规划。");
   L.push("");
 
-  L.push("## 七、相关文件入口", "", `- 项目状态：\`acb-state/project-state.json\``, `- 包清单：\`manifest.json\``, "");
+  L.push("## 八、相关文件入口", "");
+  L.push("- 项目状态：`acb-state/project-state.json`");
+  L.push("- 包清单（逐文件 SHA-256）：`manifest.json`");
+  L.push("- 恢复材料：`payload/work/`（工作区版本）、`payload/index/`（暂存版本）、`payload/baseline.bundle`（基线历史）");
+  L.push("- 恢复后请核对：报告里的「解开后文件数」应等于上面的包内条目数。", "");
   return L.join("\n");
 }
 
@@ -84,10 +108,18 @@ export function renderReportMarkdown(r: ResumeReport): string {
   L.push(`# 恢复报告 · ${r.handoffId}`, "");
   L.push(`> 总体判定：**${r.verdict}** · 代码恢复：${r.codeRestored ? "成功" : "失败"} · 指纹比对：${r.digestMatch === null ? "未执行" : r.digestMatch ? "一致 ✓" : "不一致 ✗"}`);
   L.push(`> 目标目录：\`${r.targetDir}\` · 恢复时间 ${r.at}`, "");
+  if (r.entryCount !== undefined || r.restoredCount !== undefined) {
+    L.push("## 完整性回执", "");
+    if (r.entryCount !== undefined) L.push(`- 包清单条目：${r.entryCount} 个${r.verifiedCount !== undefined ? ` · 逐条 SHA-256 核对通过 ${r.verifiedCount} 个` : ""}`);
+    if (r.restoredCount !== undefined) L.push(`- 写入目标目录：${r.restoredCount} 个文件`);
+    if (r.archiveSha256) L.push(`- 归档 SHA-256：\`${r.archiveSha256}\`（与源端导出回执逐字比对，一致才说明拿到的是同一份文件）`);
+    L.push("");
+  }
   L.push("## 恢复步骤", "", ...r.steps.map((s) => `- [${s.ok ? "x" : " "}] ${s.title} — ${s.detail}`), "");
   if (r.gaps.length) {
     L.push("## 差异与补齐动作", "", ...r.gaps.map((g) => `- ${g.blocking ? "[阻塞]" : "[提示]"} [${g.kind}] ${g.title} — ${g.detail}`), "");
   }
+  if (r.error) L.push("## 停止原因", "", `- ${r.error}`, "");
   return L.join("\n");
 }
 

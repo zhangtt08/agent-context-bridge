@@ -5,7 +5,7 @@ import {
   HardDrive, Sun, Moon, GitBranchPlus, Minus, Square, Copy, X,
 } from "lucide-react";
 import { useProject } from "../state";
-import { api, pathFromDrop, windowControls } from "../api";
+import { api, pathFromDrop, windowControls, desktopPlatform } from "../api";
 
 /** 拖放区：拖入文件后回调本机路径（桌面版）；拖悬时显示遮罩提示 */
 export function DropArea({ onPath, hint, children }: { onPath: (p: string | null) => void; hint: string; children: ReactNode }) {
@@ -49,10 +49,10 @@ export function Rail({ theme, onToggleTheme }: { theme: "light" | "dark"; onTogg
       <NavLink to={detailTo} className={({ isActive }) => "nav" + (isActive ? " active" : "")} title={latestHandoff ? "交接详情（最新）" : "交接详情（暂无交接）"}>
         <Package size={17} />
       </NavLink>
-      <NavLink to="/create" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="创建交接">
+      <NavLink to="/create" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="审阅清单并打包交接">
         <CloudUpload size={17} />
       </NavLink>
-      <NavLink to="/resume" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="恢复">
+      <NavLink to="/resume" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="预览差异并还原">
         <MonitorDown size={17} />
       </NavLink>
       <NavLink to="/settings" className={({ isActive }) => "nav" + (isActive ? " active" : "")} title="项目设置（GitHub 远端 / 检查命令）">
@@ -67,9 +67,10 @@ export function Rail({ theme, onToggleTheme }: { theme: "light" | "dark"; onTogg
   );
 }
 
-/** 窗口三键：最小化/最大化(还原)/关闭。仅在 Electron 桌面壳（frameless）中渲染 */
+/** 窗口三键：最小化/最大化(还原)/关闭。仅在 Electron 无边框窗口（Windows/Linux）中渲染 */
 function WindowControls() {
   const controls = windowControls();
+  const platform = desktopPlatform();
   const [maximized, setMaximized] = useState(false);
 
   useEffect(() => {
@@ -80,7 +81,8 @@ function WindowControls() {
     return () => { alive = false; unsubscribe(); };
   }, [controls]);
 
-  if (!controls || /Mac/i.test(navigator.platform)) return null;
+  // 判据来自桌面壳告知的真实平台：macOS 保留系统红绿灯（主进程 frame:true），其余自绘
+  if (!controls || platform === "darwin") return null;
 
   return (
     <div className="win-controls">

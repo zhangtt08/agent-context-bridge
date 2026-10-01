@@ -14,16 +14,20 @@ const metaPrefix = ".acb-meta";
 /** 本地自包含文件导出 */
 export async function publishLocal(rec: HandoffRecord, outPath: string): Promise<PublishResult> {
   const archive = await exportArchive(rec, outPath);
-  // 读取确认：包可解出 manifest 且摘要匹配
-  const { ok } = await verifyPackage(rec.packageDir);
+  // 读取确认：包内条目逐条校验 + 条目数核对；同时记下归档自身的 SHA-256 供两台电脑比对
+  const check = await verifyPackage(rec.packageDir);
   const receipt: PublicationReceipt = {
     target: "local",
-    state: ok ? "已发布" : "失败",
-    location: archive,
-    readBackConfirmed: ok,
+    state: check.ok ? "已发布" : "失败",
+    location: archive.path,
+    readBackConfirmed: check.ok,
     attempts: 1,
     publishedAt: new Date().toISOString(),
-    error: ok ? undefined : "包完整性校验未通过",
+    archiveSha256: archive.sha256,
+    archiveBytes: archive.bytes,
+    error: check.ok
+      ? undefined
+      : `包完整性校验未通过：${check.broken.slice(0, 5).join("、")}${check.broken.length > 5 ? " 等" : ""}（${check.verifiedCount}/${check.entryCount} 通过）—— 重新创建交接后再导出，勿手工修补包目录`,
   };
   return { receipt };
 }
@@ -96,28 +100,40 @@ export async function publishGithub(projectPath: string, rec: HandoffRecord, rem
   // 清理临时索引
   await fs.rm(tmpIndex, { force: true }).catch(() => {});
 
-  // 2. 暴露引用：仅推送该 SHA 到专用分支
-  let attempts = 1, lastErr: string | undefined;
+  // 2. 暴露引用：仅推送该 SHA 到专用分支（网络抖动重试，退避递增）
+  let attempts = 0, lastErr: string | undefined;
   let pushed = false;
   for (let i = 0; i < 3 && !pushed; i++) {
+    attempts++;
     try {
       await git(["push", remote, `${commitSha}:refs/heads/${branch}`], { cwd: projectPath });
       pushed = true;
     } catch (e) {
       lastErr = (e as Error).message;
-      attempts++;
       await new Promise((r) => setTimeout(r, 500 * (i + 1)));
     }
   }
 
-  // 3. 读取确认：ls-remote 可见 + 内容可达（fetch 回来校验清单存在）
+  // 3. 读取确认：远端可见 + 必需元数据真的取得回来（代码上传成功 ≠ 交接可用）
   let readBack = false;
+  let readBackDetail = "";
   if (pushed) {
     try {
       const out = await git(["ls-remote", remote, `refs/heads/${branch}`], { cwd: projectPath });
-      readBack = out.includes(commitSha);
-    } catch {
-      readBack = false;
+      if (!out.includes(commitSha)) {
+        readBackDetail = "远端引用里找不到这次推送的提交";
+      } else {
+        try {
+          await git(["fetch", "-q", remote, `refs/heads/${branch}`], { cwd: projectPath });
+          const meta = await git(["cat-file", "-p", `${commitSha}:${metaPrefix}/manifest.json`], { cwd: projectPath });
+          readBack = JSON.parse(meta).handoffId === s.handoffId;
+          readBackDetail = readBack ? "清单已从远端取回并核对" : "远端清单里的交接 ID 与本次不一致";
+        } catch (e) {
+          readBackDetail = `清单取回失败：${(e as Error).message}`;
+        }
+      }
+    } catch (e) {
+      readBackDetail = `远端查询失败：${(e as Error).message}`;
     }
   }
 
@@ -129,9 +145,17 @@ export async function publishGithub(projectPath: string, rec: HandoffRecord, rem
     readBackConfirmed: readBack,
     attempts,
     publishedAt: new Date().toISOString(),
-    error: pushed && readBack ? undefined : `推送失败: ${lastErr ?? "读取确认未通过"}`,
+    error: pushed && readBack ? undefined : buildPushError(pushed, lastErr, readBackDetail, remote, branch),
   };
   return { receipt };
+}
+
+/** 失败回执要说清"卡在哪一步"与"下一步做什么"，否则用户只能对着 stderr 猜 */
+function buildPushError(pushed: boolean, lastErr: string | undefined, readBackDetail: string, remote: string, branch: string): string {
+  if (!pushed) {
+    return `推送失败（3 次尝试）：${lastErr ?? "未知原因"}。出路：确认远端地址 ${remote} 已存在且本机 git 凭据可用（在终端 git ls-remote ${remote} 应能列出来）；网络受限就改用「导出本地文件」把交接包拷过去。`;
+  }
+  return `提交已推送但读取确认未通过：${readBackDetail || "未确认"}。分支 ${branch} 不要手工改动，直接再点一次「幂等重试发布」即可（同一内容会产生同一提交）。`;
 }
 
 /** 列出远端全部交接引用（分叉通过父关系识别，由上层处理） */

@@ -13,16 +13,24 @@ export async function runChecks(
   projectPath: string,
   snap: Snapshot,
   checks: { name: string; cmd: string; timeoutMs?: number }[],
+  onEach?: (index: number, total: number, name: string) => void,
 ): Promise<{ records: VerificationRecord[]; checkDir: string }> {
   const checkDir = path.join(os.tmpdir(), `acb-check-${snap.snapshotId}`);
   await fs.rm(checkDir, { recursive: true, force: true });
   await materialize(snap, checkDir);
 
   const records: VerificationRecord[] = [];
-  for (const c of checks) {
-    const startedAt = new Date();
-    const rec = await runOne(c, snap, checkDir, startedAt);
-    records.push(rec);
+  try {
+    for (let i = 0; i < checks.length; i++) {
+      const c = checks[i];
+      onEach?.(i, checks.length, c.name);
+      const startedAt = new Date();
+      const rec = await runOne(c, snap, checkDir, startedAt);
+      records.push(rec);
+    }
+  } finally {
+    // 检查目录是临时现场，用完就清；清理失败不影响结果，但不能让它长在本机临时目录里
+    await fs.rm(checkDir, { recursive: true, force: true }).catch(() => {});
   }
   return { records, checkDir };
 }

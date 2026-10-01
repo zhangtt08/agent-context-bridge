@@ -30,7 +30,9 @@ async function createWindow() {
     minHeight: 700,
     title: "ACB — Agent Context Bridge",
     backgroundColor: "#efece5",
-    // Windows 用 frame:false 自绘标题栏（三键内嵌页面）；macOS 保留系统红绿灯
+    // 无边框判据（勿再写反）：frame === true 表示"用系统边框"。
+    // 用户偏好：macOS 保留系统红绿灯 → frame: true；Windows/Linux 无边框 + 页面自绘三键 → frame: false。
+    // process.platform === "darwin" 在 macOS 上为 true（有框），在 win32 上为 false（无边框），符合该偏好。
     frame: process.platform === "darwin",
     autoHideMenuBar: true,
     icon: path.join(__dirname, "icon.ico"),

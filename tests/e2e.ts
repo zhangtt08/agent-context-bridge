@@ -1,13 +1,17 @@
-// 端到端验收测试：脏工作区 → 封存 → 导出 → 异目录恢复 → 发布（本地裸仓当远端）→ 再恢复
+// 端到端验收测试：脏工作区 → 审阅清单 → 封存 → 导出（带摘要回执）→ 还原前预览 → 冲突处理
+// → 异目录恢复 → 形态保真（符号链接/可执行位）→ 发布（本地裸仓当远端）→ 再恢复 → 损坏/越界阻止
 import { execSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import crypto from "node:crypto";
 import { addProject, loadResumeReports, saveResumeReport } from "../server/core/store.js";
 import { createHandoff } from "../server/core/workflow.js";
 import { publishLocal, publishGithub } from "../server/core/transport.js";
-import { resumeFromArchive } from "../server/core/resume.js";
-import { isGitRepo } from "../server/core/gitutil.js";
+import { resumeFromArchive, previewArchiveResume } from "../server/core/resume.js";
+import { checkEntries } from "../server/core/package.js";
+import { buildPreview } from "../server/core/preview.js";
+import { isGitRepo, isSafeRelPath, caseCollisions, DEFAULT_EXCLUDES, EXCLUSION_REASONS } from "../server/core/gitutil.js";
 import type { ProjectConfig } from "../shared/types.js";
 
 const T = path.join(os.tmpdir(), "acb-e2e-" + Date.now());
@@ -17,6 +21,12 @@ function check(name: string, cond: boolean, extra = "") {
   else { fail++; console.error(`FAIL  ${name} ${extra}`); }
 }
 const sh = (cmd: string, cwd: string) => execSync(cmd, { cwd, stdio: "pipe" });
+const sha256FileLocal = async (p: string) => crypto.createHash("sha256").update(await fs.readFile(p)).digest("hex");
+/** 系统临时目录里 ACB 检查用过的物化目录名（只读列举，用于"用完即清"断言） */
+const checkDirs = async (): Promise<string[]> => {
+  try { return (await fs.readdir(os.tmpdir())).filter((f) => f.startsWith("acb-check-")); }
+  catch { return []; }
+};
 
 async function main() {
   console.log("E2E 测试目录:", T);
@@ -139,9 +149,158 @@ async function main() {
 
   // ========== 7. 本机存储恢复路径 ==========
   const restoreDir2 = path.join(T, "repoC");
-  const { report: report2 } = await resumeFromArchive({ packageDir: rec.packageDir, handoffId: rec.handoffId, targetDir: restoreDir2, source: "本机存储" });
+  const { report: report2 } = await resumeFromArchive({ packageDir: rec.packageDir, targetDir: restoreDir2, source: "本机存储" });
   await saveResumeReport(report2);
-  check("本机存储恢复同样一致", report2.digestMatch === true);
+  check("本机存储恢复同样一致（交接 ID 可省，以包内为准）", report2.digestMatch === true);
+  check("恢复回执带条目数与写入数", report2.entryCount !== undefined && report2.restoredCount !== undefined && (report2.restoredCount ?? 0) > 0);
+
+  // ========== 7.1 解包临时目录不残留 ==========
+  const leftover = (await fs.readdir(path.dirname(archive))).filter((f) => f.startsWith(".acb-extract-"));
+  check("解压临时目录已回收（不在用户目录旁边留残骸）", leftover.length === 0, JSON.stringify(leftover));
+
+  // ========== 7.2 归档摘要可核对（两台电脑比对用） ==========
+  const { receipt: localReceipt2 } = await publishLocal(rec, archive);
+  const realSha = await sha256FileLocal(archive);
+  check("导出回执记录归档 SHA-256 与体积", localReceipt2.archiveSha256 === realSha && (localReceipt2.archiveBytes ?? 0) > 0);
+  let shaMismatchBlocked = false;
+  try {
+    await resumeFromArchive({ filePath: archive, handoffId: rec.handoffId, targetDir: path.join(T, "repoSha"), source: archive, archiveSha256: "f".repeat(64) });
+  } catch (e) { shaMismatchBlocked = /摘要与回执不符/.test(String((e as Error).message)); }
+  check("归档摘要与回执不符时拒绝恢复", shaMismatchBlocked);
+
+  // ========== 7.3 还原前预览与冲突处理 ==========
+  const conflictDir = path.join(T, "repoConflict");
+  await fs.mkdir(path.join(conflictDir, "src"), { recursive: true });
+  await fs.writeFile(path.join(conflictDir, "src", "a.ts"), "本机已改，不能被覆盖\n");
+  const pre = await previewArchiveResume({ filePath: archive, targetDir: conflictDir, source: archive });
+  check("预览报告完整性与将写入数", pre.integrityOk === true && pre.willWrite > 0 && pre.entryCount === pre.verifiedCount);
+  check("预览不写盘（目标目录里那个文件还是原样）",
+    (await fs.readFile(path.join(conflictDir, "src", "a.ts"), "utf8")).includes("不能被覆盖"));
+  check("预览列出撞车项", pre.conflicts.some((c) => c.path === "src/a.ts" && !c.identical));
+  const abortRes = await resumeFromArchive({ filePath: archive, targetDir: conflictDir, source: archive, onConflict: "abort" });
+  check("冲突默认停止不覆盖（判定为恢复被阻塞）", abortRes.report.verdict === "恢复被阻塞"
+    && abortRes.report.gaps.some((g) => g.blocking && /冲突/.test(g.title)));
+  const skipRes = await resumeFromArchive({ filePath: archive, targetDir: conflictDir, source: archive, onConflict: "skip" });
+  check("「跳过已存在」保留本机文件", skipRes.report.digestMatch !== true
+    && (await fs.readFile(path.join(conflictDir, "src", "a.ts"), "utf8")).includes("不能被覆盖"));
+  const owDir = path.join(T, "repoOverwrite");
+  await fs.mkdir(path.join(owDir, "src"), { recursive: true });
+  await fs.writeFile(path.join(owDir, "src", "a.ts"), "旧内容\n");
+  const owRes = await resumeFromArchive({ filePath: archive, targetDir: owDir, source: archive, onConflict: "overwrite" });
+  check("「用包内覆盖」还原成功且指纹一致", owRes.report.digestMatch === true
+    && (await fs.readFile(path.join(owDir, "src", "a.ts"), "utf8")).includes("a = 3"));
+
+  // ========== 7.4 填错交接 ID 被拒绝并说清怎么办 ==========
+  let idMismatchMsg = "";
+  try {
+    await resumeFromArchive({ filePath: archive, handoffId: "hnd_deadbeef", targetDir: path.join(T, "repoId"), source: archive });
+  } catch (e) { idMismatchMsg = String((e as Error).message); }
+  check("包内 ID 与请求 ID 不一致时拒绝并给出出路", /不一致/.test(idMismatchMsg) && /留空/.test(idMismatchMsg));
+
+  // ========== 7.5 清单里的路径穿越被挡 ==========
+  const pkgCopy = path.join(T, "pkgEvil");
+  await fs.cp(rec.packageDir, pkgCopy, { recursive: true });
+  const evilManifest = JSON.parse(await fs.readFile(path.join(pkgCopy, "manifest.json"), "utf8"));
+  evilManifest.entries.push({ path: "../../evil.txt", sha256: "0".repeat(64), size: 1 });
+  await fs.writeFile(path.join(pkgCopy, "manifest.json"), JSON.stringify(evilManifest));
+  const evilCheck = await checkEntries(pkgCopy, evilManifest);
+  check("清单里的 ../ 路径判为不安全条目", evilCheck.ok === false && evilCheck.broken.some((b) => b.includes("evil.txt")));
+  check("isSafeRelPath 挡绝对路径/盘符/UNC", !isSafeRelPath("/etc/passwd") && !isSafeRelPath("C:\\Windows\\x") && !isSafeRelPath("\\\\srv\\share\\x") && isSafeRelPath("src/a.ts"));
+
+  // ========== 7.6 排除规则表与规则本体一致（防漂移） ==========
+  check("EXCLUSION_REASONS 与 DEFAULT_EXCLUDES 一一对应",
+    EXCLUSION_REASONS.length === DEFAULT_EXCLUDES.length
+    && EXCLUSION_REASONS.every((x, i) => x.re.source === DEFAULT_EXCLUDES[i].source));
+
+  // ========== 7.7 形态保真：符号链接与可执行位跨机不丢 ==========
+  const repoM = path.join(T, "repoMode");
+  await fs.mkdir(path.join(repoM, "src"), { recursive: true });
+  sh("git init -q && git config user.email t@t && git config user.name t", repoM);
+  await fs.writeFile(path.join(repoM, "README.md"), "# m\n");
+  sh("git add -A && git commit -qm base", repoM);
+  await fs.writeFile(path.join(repoM, "run.sh"), "#!/bin/sh\necho hi\n");
+  sh("git add run.sh && git update-index --chmod=+x run.sh", repoM);
+  await fs.writeFile(path.join(repoM, "src", "link.ts"), "src/../src/a.ts");
+  const linkBlob = sh("git hash-object -w src/link.ts", repoM).toString().trim();
+  sh(`git update-index --add --cacheinfo 120000,${linkBlob},src/link.ts`, repoM);
+  const cfgM: ProjectConfig = { projectId: "prj_mode", name: "mode-repo", path: repoM, checks: [] };
+  await addProject(cfgM);
+  const createdM = await createHandoff(cfgM, { taskName: "模式保真", runChecks: false });
+  const execChange = createdM.record.state.changes.find((c) => c.path === "run.sh");
+  const linkChange = createdM.record.state.changes.find((c) => c.path === "src/link.ts");
+  check("可执行位以 100755 进入交接状态", execChange?.mode === "100755", JSON.stringify(execChange));
+  check("符号链接以 120000 进入交接状态（不再被当成普通文件）", linkChange?.mode === "120000", JSON.stringify(linkChange));
+  const archiveM = path.join(T, `acb-${createdM.record.handoffId}.acb.tar.gz`);
+  await publishLocal(createdM.record, archiveM);
+  const modeDir = path.join(T, "repoModeRestored");
+  const rM = await resumeFromArchive({ filePath: archiveM, targetDir: modeDir, source: archiveM });
+  check("形态保真的包恢复后代码指纹一致（符号链接不会造成假阴性）", rM.report.digestMatch === true,
+    rM.report.steps.find((s) => s.title === "代码指纹复算")?.detail ?? "");
+  const idxAfter = sh("git ls-files -s", modeDir).toString();
+  check("恢复后的索引保留 120000 模式", /^120000\s+[0-9a-f]{40}\s+\d+\s+src\/link\.ts$/m.test(idxAfter), idxAfter);
+  check("恢复后的索引保留 100755 模式", /^100755\s+[0-9a-f]{40}\s+\d+\s+run\.sh$/m.test(idxAfter), idxAfter);
+  const linkPlaceholder = rM.report.gaps.find((g) => /符号链接退化/.test(g.title));
+  console.log(`      （本机符号链接：${linkPlaceholder ? `无创建权限，退化为普通文件并如实登记 —— ${linkPlaceholder.detail}` : "已按链接目标重建"}）`);
+
+  // ========== 7.8 审阅清单：排除原因、历史凭据告警、大文件提示 ==========
+  const prevM = await buildPreview(cfgM);
+  check("预览给出纳入条目与体积", prevM.included.length > 0 && prevM.includedBytes >= 0);
+  check("预览标注符号链接形态", prevM.included.some((f) => f.kind === "symlink"));
+
+  const repoS = path.join(T, "repoSecret");
+  await fs.mkdir(repoS, { recursive: true });
+  sh("git init -q && git config user.email t@t && git config user.name t", repoS);
+  await fs.writeFile(path.join(repoS, ".env"), "API_KEY=real-secret-never-commit\n");
+  await fs.writeFile(path.join(repoS, "server.key"), "-----BEGIN PRIVATE KEY-----\n");
+  await fs.writeFile(path.join(repoS, "app.js"), "export const a = 1;\n");
+  sh("git add -A && git commit -qm base", repoS);
+  await fs.writeFile(path.join(repoS, ".env.local"), "LOCAL=1\n");
+  await fs.writeFile(path.join(repoS, "app.js"), "export const a = 2;\n");
+  const cfgS: ProjectConfig = { projectId: "prj_secret", name: "secret-repo", path: repoS, checks: [] };
+  await addProject(cfgS);
+  const prevS = await buildPreview(cfgS);
+  check("工作区新增的 .env.local 被排除并说明原因",
+    prevS.excluded.some((e) => e.path === ".env.local" && e.kind === "凭据" && /不带出这台电脑/.test(e.reason)));
+  check("已提交进历史的凭据被点名（排除策略挡不住历史）",
+    prevS.baselineSecrets.includes(".env") && prevS.baselineSecrets.includes("server.key"), JSON.stringify(prevS.baselineSecrets));
+  check("历史凭据告警给出可执行出路",
+    prevS.alerts.some((a) => a.level === "警告" && /Git 历史/.test(a.title) && a.action.length > 10));
+  const createdS = await createHandoff(cfgS, { taskName: "凭据默认排除", runChecks: false });
+  check("凭据不进包且写入恢复要求",
+    createdS.record.state.excluded.includes(".env.local")
+    && createdS.record.state.recoveryRequirements.some((r) => r.includes(".env.local"))
+    && !createdS.record.state.changes.some((c) => c.path === ".env.local"));
+
+  // ========== 7.9 大小写碰撞：单测 + 真仓库拦住 ==========
+  const col = caseCollisions(["src/A.ts", "src/a.ts", "src/b.ts"]);
+  check("caseCollisions 认出仅大小写不同的路径组", col.length === 1 && col[0].length === 2, JSON.stringify(col));
+  const repoC2 = path.join(T, "repoCase");
+  await fs.mkdir(repoC2, { recursive: true });
+  sh("git init -q && git config user.email t@t && git config user.name t", repoC2);
+  await fs.writeFile(path.join(repoC2, "README.md"), "# c\n");
+  sh("git add -A && git commit -qm base", repoC2);
+  // 复现"仓库在 Linux 上写着 A.ts 与 a.ts，拿到 Windows 上只能落一个"的形状：
+  // 索引里两个路径都在，工作区只有一个真文件
+  await fs.writeFile(path.join(repoC2, "A.ts"), "export const v = 1;\n");
+  sh("git add A.ts && git commit -qm A", repoC2);
+  const aBlob = sh("git hash-object -w A.ts", repoC2).toString().trim();
+  sh(`git update-index --add --cacheinfo 100644,${aBlob},a.ts`, repoC2);
+  await fs.writeFile(path.join(repoC2, "A.ts"), "export const v = 2;\n");
+  const cfgC2: ProjectConfig = { projectId: "prj_case", name: "case-repo", path: repoC2, checks: [] };
+  await addProject(cfgC2);
+  const stC2 = sh("git status --porcelain", repoC2).toString();
+  let caseMsg = "";
+  try { await createHandoff(cfgC2, { taskName: "大小写冲突", runChecks: false }); }
+  catch (e) { caseMsg = String((e as Error).message); }
+  check("现场就绪：索引里同时有 A.ts 与 a.ts", /A\.ts/.test(stC2) && /a\.ts/.test(stC2), stC2);
+  check("仅大小写不同的路径会让打包停下来（Windows 恢复会静默覆盖）", /大小写/.test(caseMsg) && /改名/.test(caseMsg), caseMsg);
+
+  // ========== 7.10 检查用的临时物化目录用完即清 ==========
+  // 只断言本次自己创建的那几个快照目录：同名前缀的其它目录可能属于并行运行，不该由本测试处置
+  const mySnaps = [created.snapshot.id, createdM.record.state.snapshotId, createdS.record.state.snapshotId];
+  const nowDirs = await checkDirs();
+  const stillMine = mySnaps.filter((s) => nowDirs.includes(`acb-check-${s}`));
+  check("检查物化目录在批次结束后被回收", stillMine.length === 0, JSON.stringify(stillMine));
 
   // ========== 8. 损坏包被阻止 ==========
   await fs.writeFile(archive, Buffer.from("corrupted!!"));

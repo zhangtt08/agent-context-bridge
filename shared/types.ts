@@ -20,7 +20,8 @@ export interface FileChange {
   status: "added" | "modified" | "deleted" | "renamed";
   staged: boolean;            // 暂存区状态需要恢复材料
   oldPath?: string;           // renamed 时
-  mode: string;               // 如 100644
+  /** Git 文件模式：100644 普通 / 100755 可执行 / 120000 符号链接（内容为链接目标） */
+  mode: string;
 }
 
 export interface Observation {
@@ -98,6 +99,9 @@ export interface PublicationReceipt {
   attempts: number;
   publishedAt: string;
   error?: string;
+  /** 本地导出：归档文件自身的 SHA-256 与字节数，供两台电脑逐字核对 */
+  archiveSha256?: string;
+  archiveBytes?: number;
 }
 
 export interface HandoffRecord {
@@ -137,4 +141,108 @@ export interface ResumeReport {
   gaps: ResumeGap[];
   entryMarkdownPath?: string;
   error?: string;
+  /** 完整性回执：清单条目数 / 实际校验通过数 / 解开后写入数（旧报告可能没有这些字段） */
+  entryCount?: number;
+  verifiedCount?: number;
+  restoredCount?: number;
+  archiveSha256?: string;
+}
+
+/** 恢复冲突处理策略：还原前先看清目标目录已有什么 */
+export type ConflictPolicy = "abort" | "skip" | "overwrite";
+
+/** 打包前审阅清单里的一个条目（只 stat，不读内容，因此大仓库也很快） */
+export interface PreviewFile {
+  path: string;
+  bytes: number;
+  status: FileChange["status"];
+  mode: string;                 // 100644 / 100755 / 120000
+  staged: boolean;
+  kind: "file" | "executable" | "symlink" | "deleted";
+}
+
+/** 被排除项 + 人可读原因 */
+export interface PreviewExclusion {
+  path: string;
+  reason: string;
+  kind: ExcludeReason;
+}
+
+export type ExcludeReason = "凭据" | "依赖" | "产物" | "工具存储" | "日志" | "系统文件";
+
+/** 审阅清单里的可执行出路 */
+export interface PreviewAlert {
+  level: "阻塞" | "警告" | "提示";
+  title: string;
+  detail: string;
+  /** 用户下一步能做的事，不是空话 */
+  action: string;
+}
+
+export interface CapturePreview {
+  projectId: string;
+  projectName: string;
+  at: string;
+  baseline: { branch: string | null; commit: string | null; repoBytesApprox: number; objects: number };
+  included: PreviewFile[];
+  includedBytes: number;
+  excluded: PreviewExclusion[];
+  /** 已提交进 Git 历史、随基线 bundle 一起带走的凭据文件（排除策略挡不住历史） */
+  baselineSecrets: string[];
+  alerts: PreviewAlert[];
+  checksConfigured: number;
+  env: { os: string; runtime: string; git: string };
+  /** 交接包大致的额外开销：基线 bundle 会携带完整历史 */
+  bundleNote: string;
+}
+
+export interface ResumeConflict {
+  path: string;
+  identical: boolean;
+  packageBytes: number;
+  targetBytes: number;
+}
+
+/** 还原前的差异预览：整包校验 + 目标目录比对，一个字节都不写 */
+export interface ResumePreview {
+  handoffId: string;
+  projectName: string;
+  taskName: string;
+  sealedAt: string;
+  source: string;
+  targetDir: string;
+  integrityOk: boolean;
+  entryCount: number;
+  verifiedCount: number;
+  broken: string[];
+  packageDigest: string;
+  protocolVersion: string;
+  totalBytes: number;
+  willWrite: number;
+  willDelete: number;
+  stagedCount: number;
+  symlinkCount: number;
+  baselineAvailable: boolean;
+  conflicts: ResumeConflict[];
+  alerts: PreviewAlert[];
+  sourceEnv: { os: string; runtime: string };
+  /** 归档体积与摘要说明（本机封存目录时写"无归档摘要"） */
+  archiveInfo?: string;
+}
+
+/** 长任务（打包 / 还原）的进度视图：轮询它就有大仓库的耗时反馈 */
+export interface JobView {
+  id: string;
+  kind: "capture" | "restore";
+  state: "进行中" | "完成" | "失败";
+  stage: string;
+  pct: number;
+  message: string;
+  startedAt: string;
+  endedAt?: string;
+  /** 完成后携带结果 */
+  result?: unknown;
+  error?: string;
+  /** 失败时的可执行出路 */
+  remedy?: string;
 }

@@ -2,31 +2,39 @@ import { useCallback, useEffect, useState } from "react";
 import {
   Fingerprint, ShieldCheck, ScanSearch, FlaskConical, MessageSquareQuote,
   GitFork, CloudCheck, Eye, FileArchive, RefreshCw, Loader,
-  TriangleAlert, FileText,
+  TriangleAlert, FileText, MonitorDown,
 } from "lucide-react";
 import { Link, useParams } from "react-router-dom";
 import { PageHead, Panel, Topbar } from "../components/Shell";
-import { api, fmtTime, shortDigest, type HandoffRecord, type PublicationReceipt } from "../api";
+import { api, fmtTime, fmtBytes, shortDigest, type HandoffRecord, type PublicationReceipt } from "../api";
+
+type Integrity = { ok: boolean; entryCount: number; verifiedCount: number; broken: string[]; label: string };
+
+type Detail = { record: HandoffRecord; project: { name: string; githubRemote?: string; path: string }; children: string[] };
 
 export default function HandoffDetail() {
   const { id = "" } = useParams();
-  const [data, setData] = useState<{ record: HandoffRecord; project: { name: string }; children: string[] } | null>(null);
+  const [data, setData] = useState<Detail | null>(null);
+  const [integrity, setIntegrity] = useState<Integrity | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [pubErr, setPubErr] = useState<string | null>(null);
   const [pubBusy, setPubBusy] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try { setData(await api.handoff(id)); setErr(null); }
     catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+    try { setIntegrity(await api.integrity(id)); } catch { setIntegrity(null); }
   }, [id]);
 
   useEffect(() => { void load(); }, [load]);
 
   const publish = async (target: "github" | "local") => {
-    setPubBusy(target);
+    setPubBusy(target); setPubErr(null);
     try {
-      await api.publish(id, target);
+      const { receipt } = await api.publish(id, target);
       await load();
-    } catch (e) { setErr(e instanceof Error ? e.message : String(e)); }
+      if (receipt.state !== "已发布") setPubErr(receipt.error ?? "发布未确认");
+    } catch (e) { setPubErr(e instanceof Error ? e.message : String(e)); }
     setPubBusy(null);
   };
 
@@ -72,6 +80,13 @@ export default function HandoffDetail() {
           sub={<>封存于 {fmtTime(rec.sealedAt)} · 协议 {s.protocolVersion} · 由 <span className="mono">{s.toolVersion}</span> 生成{s.parentHandoffIds.length ? <> · 父交接 {s.parentHandoffIds.map((p) => <Link key={p} className="mono amber" to={`/handoff/${p}`}>{p}</Link>)}</> : null}{data.children.length ? <> · 后继 {data.children.map((c) => <Link key={c} className="mono amber" to={`/handoff/${c}`}>{c}</Link>)}</> : null}</>}
         />
 
+        {pubErr && (
+          <div className="notice warn" style={{ marginBottom: 16 }}>
+            <TriangleAlert size={15} className="red" />
+            <div className="xs red">发布未完成：{pubErr} — 已封存的交接不受影响，修好后可再点一次「幂等重试发布」。</div>
+          </div>
+        )}
+
         <div className="grid g-12" style={{ marginBottom: 18 }}>
           <Panel title="身份与快照" icon={<Fingerprint size={15} className="amber" />} tag="immutable" corner style={{ gridColumn: "span 8" }}>
             <dl className="kv" style={{ gridTemplateColumns: "repeat(2, 128px 1fr)", columnGap: 28 }}>
@@ -85,9 +100,17 @@ export default function HandoffDetail() {
               <dt>必需能力</dt><dd className="mono">{s.capabilities.join(" · ")}</dd>
             </dl>
           </Panel>
-          <Panel title="完整性" icon={<ShieldCheck size={15} className="amber" />} tag="package" style={{ gridColumn: "span 4" }} bodyStyle={{ paddingTop: 10 }}>
-            <div className="li-row" style={{ padding: "8px 0" }}><span className="badge green">包清单摘要 ✓</span><span className="xs muted">清单无自引用，摘要外置</span></div>
-            <div className="li-row" style={{ padding: "8px 0" }}><span className="badge green">代码恢复材料 ✓</span><span className="xs muted" style={{ marginLeft: 8 }}>基线 + 工作区 + 暂存</span></div>
+          <Panel title="完整性" icon={<ShieldCheck size={15} className="amber" />} tag="实测" style={{ gridColumn: "span 4" }} bodyStyle={{ paddingTop: 10 }}>
+            <div className="li-row" style={{ padding: "8px 0" }}>
+              <span className={"badge " + (integrity ? (integrity.ok ? "green" : "red") : "")}>{integrity ? integrity.label : "核对中…"}</span>
+              <span className="xs muted">逐条目 SHA-256 实算比对</span>
+            </div>
+            {integrity && !integrity.ok && (
+              <div className="xs red" style={{ paddingBottom: 8 }}>
+                未通过条目：{integrity.broken.slice(0, 5).join("、")}{integrity.broken.length > 5 ? " 等" : ""}。包按设计不可原地修改 —— 回源电脑重新创建交接。
+              </div>
+            )}
+            <div className="li-row" style={{ padding: "8px 0" }}><span className="badge green">代码恢复材料 ✓</span><span className="xs muted" style={{ marginLeft: 8 }}>基线 bundle + 工作区 + 暂存</span></div>
             {s.recoveryRequirements.length === 0
               ? <div className="li-row" style={{ padding: "8px 0" }}><span className="badge teal">无缺口</span><span className="xs muted" style={{ marginLeft: 8 }}>无接收端需补齐项</span></div>
               : s.recoveryRequirements.map((r) => (
@@ -96,6 +119,12 @@ export default function HandoffDetail() {
             <div className="li-row" style={{ padding: "8px 0" }}>
               <span className="badge teal">排除 {s.excluded.length}</span>
               <span className="xs muted" style={{ marginLeft: 8 }}>{s.excluded.length ? s.excluded.join("、") : "无排除项"}</span>
+            </div>
+            <div className="li-row" style={{ padding: "8px 0" }}>
+              <span className="badge">形态</span>
+              <span className="xs muted" style={{ marginLeft: 8 }}>
+                链接 {s.changes.filter((c) => c.mode === "120000").length} · 可执行 {s.changes.filter((c) => c.mode === "100755").length} · 删除 {s.changes.filter((c) => c.status === "deleted").length} · 重命名 {s.changes.filter((c) => c.status === "renamed").length}
+              </span>
             </div>
           </Panel>
         </div>
@@ -179,14 +208,27 @@ export default function HandoffDetail() {
           </Panel>
 
           <Panel title="发布回执" icon={<CloudCheck size={15} className="amber" />} tag="publication" style={{ gridColumn: "span 5" }} bodyStyle={{ paddingTop: 10 }}>
-            {rec.publications.length === 0 && <div className="xs muted">尚未发布。可在创建页或上方按钮执行发布。</div>}
+            {rec.publications.length === 0 && (
+              <div className="xs muted">
+                尚未发布。用右上「导出文件」拿到 .acb.tar.gz，或「幂等重试发布」推 GitHub 交接分支。
+                {!data.project.githubRemote && <span> 未配置远端时只有本地文件这条路可走 —— 在 <Link className="amber" to="/settings">项目设置</Link> 里补。</span>}
+              </div>
+            )}
             {rec.publications.slice().reverse().map((p: PublicationReceipt, i) => (
               <dl className="kv" key={i} style={{ marginBottom: 10 }}>
                 <dt>{p.target === "github" ? "GitHub 发布" : "本地导出"}</dt>
                 <dd>
                   <span className={"badge " + (p.state === "已发布" ? "green" : "red")}>{p.state}</span>
-                  <div className="mono xs muted" style={{ marginTop: 4 }}>{p.location}</div>
-                  {p.commitSha && <div className="mono xs faint">提交 {p.commitSha.slice(0, 10)} · 读取确认 {p.readBackConfirmed ? "✓" : "✗"} · {p.attempts} 次尝试</div>}
+                  <span className="xs muted" style={{ marginLeft: 8 }}>读取确认 {p.readBackConfirmed ? "✓" : "✗"} · {p.attempts} 次尝试 · {fmtTime(p.publishedAt)}</span>
+                  <div className="mono xs muted" style={{ marginTop: 4, wordBreak: "break-all" }}>{p.location}</div>
+                  {p.commitSha && <div className="mono xs faint">提交 {p.commitSha.slice(0, 10)}</div>}
+                  {p.archiveSha256 && (
+                    <div className="mono xs faint" style={{ wordBreak: "break-all" }}>
+                      归档 {fmtBytes(p.archiveBytes ?? 0)} · sha256 {p.archiveSha256}
+                      <button className="btn sm ghost" style={{ marginLeft: 8 }} title="复制 sha256，到另一台电脑核对拿到的文件是否同一份"
+                        onClick={() => void navigator.clipboard?.writeText(p.archiveSha256 ?? "")}>复制</button>
+                    </div>
+                  )}
                   {p.error && <div className="xs red">{p.error}</div>}
                 </dd>
               </dl>
@@ -194,7 +236,13 @@ export default function HandoffDetail() {
             <div className="xs muted" style={{ marginTop: 6, padding: "10px 12px", background: "var(--panel-2)", border: "1px solid var(--line)" }}>
               发布采用“先完整生成、再暴露引用、再读取确认”。代码上传成功 ≠ 发布完成；读取确认全部必需材料后才标记已发布。
             </div>
-            {exported && <div className="xs faint" style={{ marginTop: 8 }}><FileText size={11} style={{ display: "inline" }} /> 归档文件：{exported.location}</div>}
+            {exported && (
+              <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+                <FileText size={12} className="amber" />
+                <span className="xs faint" style={{ flex: 1, minWidth: 0, wordBreak: "break-all" }}>{exported.location}</span>
+                <Link to="/resume" className="btn sm primary"><MonitorDown size={12} /> 到还原页</Link>
+              </div>
+            )}
           </Panel>
         </div>
 
