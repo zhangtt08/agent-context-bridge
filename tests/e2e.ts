@@ -16,6 +16,9 @@ import {
   unquoteGitPath, windowsNameIssues,
 } from "../server/core/gitutil.js";
 import type { ProjectConfig } from "../shared/types.js";
+import {
+  isLoopbackAddress, resolveBindHost, assertLoopbackOrigins, hostHeaderAllowed, originAllowed,
+} from "../server/core/local-guard.js";
 
 const T = path.join(os.tmpdir(), "acb-e2e-" + Date.now());
 let pass = 0, fail = 0;
@@ -461,6 +464,76 @@ async function main() {
   // ========== 9. 恢复报告落盘 ==========
   const reports = await loadResumeReports();
   check("Resume Report 已保存", reports.length >= 2);
+
+  // ========== 10. 服务层与本机守卫 ==========
+  // 上面九节全在核心函数上跑，一个 HTTP 请求都没发过 —— 于是"npm run dev 指向
+  // server/index.ts，而那个模块只 export startServer、从不 listen"这种缺陷能在全绿
+  // 的情况下活着。这一节把服务真起一次，并钉住四件事：入口形状、Origin/Host 矩阵、
+  // "目录不见了"的分类（404 而不是 500）、以及 Agent 能力面与界面同源。
+  check("isLoopbackAddress 认 127.x 与 ::1", isLoopbackAddress("127.0.0.1") && isLoopbackAddress("[::1]") && !isLoopbackAddress("localhost") && !isLoopbackAddress("0.0.0.0"));
+  let bindThrew = false;
+  try { resolveBindHost({ ACB_BIND_HOST: "0.0.0.0" }); } catch { bindThrew = true; }
+  check("非回环的 ACB_BIND_HOST 拒绝启动（不是静默接受）", bindThrew);
+  let originThrew = false;
+  try { assertLoopbackOrigins("http://evil.example.com"); } catch { originThrew = true; }
+  check("ACB_ALLOWED_ORIGINS 里的外来源拒绝启动", originThrew && assertLoopbackOrigins("http://localhost:5173").length === 1);
+  check("Host 头按固定字面量清单判，不比请求自己", hostHeaderAllowed("127.0.0.1:5174", 5174) && !hostHeaderAllowed("evil.example:5174", 5174) && !hostHeaderAllowed("127.0.0.1:5175", 5174));
+  check("Origin 只放本服务源，额外项要显式登记", originAllowed("http://localhost:5174", 5174) && originAllowed("http://localhost:5173", 5174, ["http://localhost:5173"]) && !originAllowed("http://localhost:5173", 5174) && !originAllowed("https://localhost:5174", 5174));
+
+  // 守卫在 index.ts 装载时读 ACB_ALLOWED_ORIGINS，所以必须在 import 之前设好 —— 用 await import
+  process.env.ACB_ALLOWED_ORIGINS = "http://localhost:5173";
+  const { startServer } = await import("../server/index.js");
+  const handle = await startServer(0);
+  check("startServer 回句柄而不是端口号（桌面壳读 handle.port/close）",
+    typeof handle === "object" && typeof handle.port === "number" && handle.port > 0 && typeof handle.close === "function");
+  const base = `http://127.0.0.1:${handle.port}`;
+  try {
+    const health = await fetch(`${base}/api/health`);
+    const hb = await health.json() as { ok?: boolean; data?: { tools?: number } };
+    check("GET /api/health 通，且报的是工具注册表的真数", health.status === 200 && hb.ok === true && (hb.data?.tools ?? 0) >= 17, `tools=${hb.data?.tools}`);
+    check("响应不带 CORS 放行头（这个服务没有跨源调用方）", health.headers.get("access-control-allow-origin") === null);
+    check("外来 Origin 403", (await fetch(`${base}/api/health`, { headers: { origin: "https://evil.example.com" } })).status === 403);
+    check("登记过的回环开发源（vite:5173）放行", (await fetch(`${base}/api/health`, { headers: { origin: "http://localhost:5173" } })).status === 200);
+    check("没登记的另一个本机端口仍被拒", (await fetch(`${base}/api/health`, { headers: { origin: "http://localhost:5999" } })).status === 403);
+
+    const manifest = await fetch(`${base}/api/agent/manifest`);
+    const mb = await manifest.json() as { data?: { tools?: { name: string }[] } };
+    check("/api/agent/manifest 交出工具表", manifest.status === 200 && (mb.data?.tools?.length ?? 0) >= 17 && mb.data!.tools!.some((t) => t.name === "acb.project_overview"));
+    // 调用形状是 {tool, input}（见 server/agent/routes.ts 的 POST /api/agent/tool）
+    const unknown = await fetch(`${base}/api/agent/tool`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "acb.不存在", input: {} }),
+    });
+    const ub = await unknown.json() as { error?: { code?: string; available?: string[] } };
+    check("未知工具是 400+unknown_tool，不是 500", unknown.status === 400 && ub.error?.code === "unknown_tool", `${unknown.status} ${ub.error?.code}`);
+    check("unknown_tool 带机器可读的可用清单", Array.isArray(ub.error?.available) && (ub.error?.available?.length ?? 0) >= 17);
+
+    // 注册还在、目录被挪走：调用方能自己修好的失败 → 404 并点名是哪个路径。
+    // 报 500 的话，Agent 会以为服务坏了去重试，而重试一万次也不会好。
+    const gone = path.join(T, "moved-away");
+    await addProject({ projectId: "prj_gone", name: "被挪走的项目", path: gone, checks: [] } as ProjectConfig);
+    const ov = await fetch(`${base}/api/projects/prj_gone/overview`);
+    const ovBody = await ov.json() as { error?: string };
+    const ovMsg = ovBody.error ?? "";
+    check("目录不见了 → 404（不是 500）", ov.status === 404, `HTTP ${ov.status}`);
+    check("失败说得出是哪个目录、也给出路", ovMsg.includes(gone) && /出路|重新注册/.test(ovMsg), ovMsg.slice(0, 70));
+    const listed = await fetch(`${base}/api/agent/tool`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "acb.projects_list", input: {} }),
+    });
+    const lb = await listed.json() as { data?: { projects?: { projectId: string; dirAvailable?: boolean }[] } };
+    const row = lb.data?.projects?.find((p) => p.projectId === "prj_gone");
+    check("陈行注册表在列表里就露面（dirAvailable=false）", row?.dirAvailable === false, JSON.stringify(row));
+    const prevTool = await fetch(`${base}/api/agent/tool`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ tool: "acb.project_overview", input: { projectId: "prj_gone" } }),
+    });
+    const prevBody = await prevTool.json() as { error?: { code?: string; message?: string } };
+    check("同一条失败在 Agent 侧是 not_found，不是 internal_error", prevTool.status === 400 && prevBody.error?.code === "not_found", `${prevTool.status} ${prevBody.error?.code}`);
+    check("Agent 侧那条也带着路径与出路", (prevBody.error?.message ?? "").includes(gone), (prevBody.error?.message ?? "").slice(0, 70));
+  } finally {
+    await handle.close();
+  }
 
   console.log(`\n结果: ${pass} 通过, ${fail} 失败`);
   if (fail > 0) process.exitCode = 1;
