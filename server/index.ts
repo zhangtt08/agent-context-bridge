@@ -41,6 +41,26 @@ app.use(localGuard({ port: () => bound.port, allowedOrigins: assertLoopbackOrigi
 
 app.use(express.json({ limit: "4mb" }));
 
+// 解析层的错（坏 JSON、超大 body）必须在这一道回 JSON。落到 Express 默认处理器
+// 会回一页 HTML（甲方探针实测：POST 畸形 JSON 得到 400 + `<!DOCTYPE html>`），
+// 而契约要的是 {ok:false,error:{code,message}} —— Agent 读 HTML 只能报"服务坏了"。
+// 只认这两类，其余原样 next()，不去抢路由自己的错误分类。
+app.use((err: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  const e = err as { type?: string; status?: number | string; message?: string };
+  const parseFailed = e?.type === "entity.parse.failed" || e instanceof SyntaxError;
+  const tooLarge = e?.type === "entity.too.large" || e?.status === 413;
+  if (!parseFailed && !tooLarge) { next(err); return; }
+  res.status(tooLarge ? 413 : 400).json({
+    ok: false,
+    error: {
+      code: tooLarge ? "too_large" : "bad_json",
+      message: tooLarge
+        ? "请求体超过 4mb 上限 —— 这一条从一开始就没被读，不是读到一半截断。"
+        : `请求体不是合法 JSON：${String(e?.message || "未知原因").slice(0, 160)}`,
+    },
+  });
+});
+
 // ---- 第二道：存储警告随响应露面（坏文件绝不能被静默当成"你还没有项目"）----
 // 挂在 json 之前：res.json 被包一层，发送前把当前警告塞进响应头，
 // REST 的形状因此一个字都不用改（界面照旧读数组），但 CLI/curl 也看得见问题。

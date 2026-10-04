@@ -498,6 +498,14 @@ async function main() {
     check("外来 Origin 403", (await fetch(`${base}/api/health`, { headers: { origin: "https://evil.example.com" } })).status === 403);
     check("登记过的回环开发源（vite:5173）放行", (await fetch(`${base}/api/health`, { headers: { origin: "http://localhost:5173" } })).status === 200);
     check("没登记的另一个本机端口仍被拒", (await fetch(`${base}/api/health`, { headers: { origin: "http://localhost:5999" } })).status === 403);
+    // 解析层的失败形状：落到 Express 默认处理器会回一页 HTML，Agent 只能报"服务坏了"。
+    // 甲方探针在真产物上抓到过一次（400 + `<!DOCTYPE html>`），这两条把它钉住。
+    const junk = await fetch(`${base}/api/agent/tool`, { method: "POST", headers: { "content-type": "application/json" }, body: "{not json" });
+    const jb = await junk.json().catch(() => null) as { ok?: boolean; error?: { code?: string } } | null;
+    check("畸形 JSON 回契约 JSON 错误体，不是 HTML 错误页", junk.status === 400 && jb?.ok === false && jb?.error?.code === "bad_json", `status=${junk.status} body=${JSON.stringify(jb)?.slice(0, 80)}`);
+    const big = await fetch(`${base}/api/agent/tool`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ tool: "acb.storage_status", input: { pad: "x".repeat(5 * 1024 * 1024) } }) });
+    const bbody = await big.json().catch(() => null) as { ok?: boolean; error?: { code?: string } } | null;
+    check("超大 body 回 413 的 JSON 而不是 HTML", big.status === 413 && bbody?.ok === false && bbody?.error?.code === "too_large", `status=${big.status}`);
 
     const manifest = await fetch(`${base}/api/agent/manifest`);
     const mb = await manifest.json() as { data?: { tools?: { name: string }[] } };
