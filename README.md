@@ -68,7 +68,7 @@ Pipeline: **capture → verify → package → publish → restore**.
 ```
 shared/types.ts        protocol types (shared by frontend and server)
 server/core/           capture / verify / protocol / package / transport / resume / workflow / store
-server/index.ts        Express API (:5174)
+server/index.ts        Express API (:5174) — exports startServer; server/main.ts is the entry that listens
 server/cli.ts          CLI entry
 src/                   React frontend (4 screens: Overview / Create / Detail / Restore)
 desktop/               Electron shell (main + preload)

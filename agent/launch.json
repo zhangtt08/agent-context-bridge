@@ -1,9 +1,9 @@
 {
   "command": "node",
-  "args": ["node_modules/tsx/dist/cli.mjs", "server/index.ts"],
+  "args": ["node_modules/tsx/dist/cli.mjs", "server/main.ts"],
   "ready_port": 5174,
   "ready_path": "/api/health",
-  "note": "ACB 用项目自带的 Express 服务（就地接入形状 B：没有第二个 agent 进程，也没有第二个端口）。四个契约端点由 server/agent/routes.ts 提供，工具注册表在 server/agent/tools.ts。端口默认 5174，可用 ACB_PORT 改；实际监听地址会被写进 agent/.endpoint（打包目录里没有 agent/ 时跳过）。服务只绑 127.0.0.1，ACB_BIND_HOST 也只接受回环地址。",
+  "note": "ACB 用项目自带的 Express 服务（就地接入形状 B：没有第二个 agent 进程，也没有第二个端口）。四个契约端点由 server/agent/routes.ts 提供，工具注册表在 server/agent/tools.ts。端口默认 5174，可用 ACB_PORT 改；实际监听地址会被写进 agent/.endpoint（打包目录里没有 agent/ 时跳过）。服务只绑 127.0.0.1，ACB_BIND_HOST 也只接受回环地址。入口是 server/main.ts 而不是 server/index.ts：index.ts 只 export startServer、从不 listen，按它当入口起的是一个端口都不监听的空进程（这条自动拉起会把服务'起成功'却连不上）。",
   "dev_command": "npm run dev 起的是 vite(:5173) + tsx 服务端(:5174)，四个端点同样可用；跨端口的开发代理需要把 5173 加进 ACB_ALLOWED_ORIGINS（见 开发模式.cmd 已内置）。",
   "requires_build": "不需要构建：这条命令直接跑 TypeScript 源。界面用的前端仍要 npm run build（dist/），但 /api/health 与 /api/agent/* 不依赖它。",
   "tools_source": "server/agent/tools.ts（唯一实现）。agent/tools.mjs 只是它的命令行外壳，不重写 handler。",

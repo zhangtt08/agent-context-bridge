@@ -61,7 +61,7 @@ npm test    # 端到端：脏工作区→封存→导出→异目录恢复→发
 ```
 shared/types.ts        协议类型（前后端共享）
 server/core/           capture / verify / protocol / package / transport / resume / workflow / store
-server/index.ts        Express API（:5174）
+server/index.ts        Express API（:5174，导出 startServer；真正 listen 的入口是 server/main.ts）
 server/cli.ts          命令行入口
 src/                   React 前端（四屏：总览 / 创建 / 详情 / 恢复；亮色工业风主题）
 desktop/               Electron 外壳（main + preload）

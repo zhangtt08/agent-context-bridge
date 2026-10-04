@@ -15,7 +15,16 @@ import path from 'node:path';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = path.resolve(__dirname, '..');
 const PROTOCOL = '2.2.0';
-const SERVER_INFO = { name: path.basename(PROJECT_ROOT) + '-agent-api', version: '1.0.0' };
+// 版本只有一个来源：package.json（与 /api/health、exe 元数据同一个）。写死一个数字
+// 的话，桥自己报的版本和服务报的版本迟早分叉 —— 而那正是"看起来两个都对"的缺陷形状。
+const appVersion = (() => {
+  try {
+    const j = JSON.parse(readFileSync(path.join(PROJECT_ROOT, 'package.json'), 'utf8'));
+    if (j.name === 'acb' && typeof j.version === 'string') return j.version;
+  } catch { /* 读不到就退回未知，不硬编一个看起来像真的号 */ }
+  return 'unknown';
+})();
+const SERVER_INFO = { name: path.basename(PROJECT_ROOT) + '-agent-api', version: appVersion };
 
 const log = (...a) => process.stderr.write(`[mcp] ${a.join(' ')}\n`);
 

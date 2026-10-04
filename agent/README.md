@@ -18,7 +18,7 @@ agent/.endpoint        生成物（gitignore）：固定端口启动时写入实
 ## 启动
 
 ```bash
-npm run agent:serve      # 就是 tsx server/index.ts：服务本身带四个契约端点
+npm run agent:serve      # tsx server/main.ts（入口是 main.ts：index.ts 只导出 startServer、不 listen）
 npm run agent:mcp        # MCP stdio 桥（服务没起时它按 agent/launch.json 自己拉一个）
 node agent/tools.mjs --list
 node agent/tools.mjs --selftest      # 逐个真跑只读工具，确认返回的是本机真实数据
