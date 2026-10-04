@@ -74,7 +74,11 @@ export function hostHeaderAllowed(header: string | undefined, port: number): boo
   const [hostForm, hp] = splitHost(header);
   const name = hostForm.replace(/^\[|\]$/g, "");
   const hostOk = LOOPBACK_HOST_FORMS.includes(hostForm) || isLoopbackAddress(name);
-  return hostOk && hp === String(port);
+  // 不带端口的 Host 头是合法的（RFC 9110：省略就按 URI 的默认端口）。
+  // 因为"没写端口"而拒它会打断真实的本机客户端 —— 发行包体检就是这么红的：
+  // 客户端发 `Host: 127.0.0.1`，服务在 5085。防 rebinding 靠的是 host 必须是
+  // 回环字面量，与那一段端口在不在无关；所以**写明了别的端口仍然拒**。
+  return hostOk && (hp === undefined || hp === String(port));
 }
 
 function expectedOrigins(port: number): string[] {
@@ -164,7 +168,7 @@ export function localGuard(cfg: GuardConfig) {
       forbidden(
         res,
         "forbidden_host",
-        `Host 头「${req.headers.host ?? "(缺失)"}」不是本机回环地址（只接受 127.0.0.1:${port} / localhost:${port} / [::1]:${port}）。` +
+        `Host 头「${req.headers.host ?? "(缺失)"}」不是本机回环地址（只接受 127.0.0.1${port ? `:${port}` : ""} / localhost / [::1]，端口可省略）。` +
         `这一条挡的是 DNS 重绑定：域名解析到 127.0.0.1 之后请求确实打在回环上，但它来自另一个源。` +
         `出路：直接用 http://127.0.0.1:${port}/ 访问；要跨电脑交接请用「发布到 GitHub 交接分支」或「导出本地文件」。`,
       );

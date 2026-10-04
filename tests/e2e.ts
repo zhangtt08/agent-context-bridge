@@ -478,6 +478,9 @@ async function main() {
   try { assertLoopbackOrigins("http://evil.example.com"); } catch { originThrew = true; }
   check("ACB_ALLOWED_ORIGINS 里的外来源拒绝启动", originThrew && assertLoopbackOrigins("http://localhost:5173").length === 1);
   check("Host 头按固定字面量清单判，不比请求自己", hostHeaderAllowed("127.0.0.1:5174", 5174) && !hostHeaderAllowed("evil.example:5174", 5174) && !hostHeaderAllowed("127.0.0.1:5175", 5174));
+  // 省略端口的写法合法（RFC 9110 按 URI 默认端口）；但外域无论带不带端口都要拒。
+  // 这一条是发行包体检逼出来的：客户端发 `Host: 127.0.0.1` 时守卫视健康检查为 403。
+  check("省略端口的回环 Host 放行，外域仍然拒", hostHeaderAllowed("127.0.0.1", 5174) && hostHeaderAllowed("localhost", 5174) && hostHeaderAllowed("[::1]", 5174) && !hostHeaderAllowed("evil.example", 5174) && !hostHeaderAllowed("acb.example.com:5174", 5174) && !hostHeaderAllowed(undefined, 5174));
   check("Origin 只放本服务源，额外项要显式登记", originAllowed("http://localhost:5174", 5174) && originAllowed("http://localhost:5173", 5174, ["http://localhost:5173"]) && !originAllowed("http://localhost:5173", 5174) && !originAllowed("https://localhost:5174", 5174));
 
   // 守卫在 index.ts 装载时读 ACB_ALLOWED_ORIGINS，所以必须在 import 之前设好 —— 用 await import
