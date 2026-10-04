@@ -3,6 +3,9 @@
 # 自动构建：dist/（前端）与 dist-server/（服务端 JS），无需手动前置
 set -e
 cd "$(dirname "$0")/.."
+# 版本只有一个来源：package.json。之前这里写死 0.1.0、而 package.json 是 0.0.0，
+# 于是双击的 exe 报 0.1.0、服务与界面报 0.0.0（npm run verify 会抓到这件事）。
+VER=$(node -p "require('./package.json').version")
 npm run build
 npx tsc -p tsconfig.server.json
 rm -rf release/ACB-win64 release/app
@@ -24,7 +27,7 @@ mkdir -p release/ACB-win64/resources/app
 cp desktop/main.cjs desktop/preload.cjs release/app/server.cjs release/app/cli.cjs release/ACB-win64/resources/app/
 cp build/icon.ico build/icon-256.png release/ACB-win64/resources/app/
 cp -r dist release/ACB-win64/resources/app/dist
-printf '{ "name": "acb", "productName": "ACB", "version": "0.1.0", "main": "main.cjs" }' > release/ACB-win64/resources/app/package.json
+printf '{ "name": "acb", "productName": "ACB", "version": "%s", "main": "main.cjs" }' "$VER" > release/ACB-win64/resources/app/package.json
 cp README-DESKTOP.txt release/ACB-win64/使用说明.txt 2>/dev/null || true
 
 # 4. 精简：删除默认应用与多余语言包（保留 zh-CN / en-US）
@@ -38,6 +41,6 @@ rm -f release/ACB-win64/resources/default_app.asar
   --set-version-string "ProductName" "ACB" \
   --set-version-string "CompanyName" "acb-local" \
   --set-version-string "LegalCopyright" "MIT" \
-  --set-file-version "0.1.0" --set-product-version "0.1.0"
+  --set-file-version "$VER" --set-product-version "$VER"
 
 echo "完成: release/ACB-win64（双击 ACB.exe 运行）"
