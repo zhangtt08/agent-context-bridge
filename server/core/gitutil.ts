@@ -6,6 +6,14 @@ import crypto from "node:crypto";
 import type { ExcludeReason } from "../../shared/types.js";
 
 export async function git(args: string[], opts: { cwd: string; env?: Record<string, string> }): Promise<string> {
+  // 目录不存在时先自己说清楚：Windows 上 execFile 会报 "spawn git ENOENT"，
+  // 那句话点名的是 git（好像机器上没装 git），而真正的原因通常是注册的项目目录
+  // 被移动/改名/删除了。判据必须说得出差在哪一格，否则排查方向被整个带走。
+  try {
+    await fs.access(opts.cwd);
+  } catch {
+    return Promise.reject(new Error(`目录不存在，无法在里面跑 git ${args.join(" ")}：${opts.cwd}（出路：项目可能被移动/改名/删除，请按新路径重新注册）`));
+  }
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd: opts.cwd, env: { ...process.env, ...opts.env }, maxBuffer: 64 * 1024 * 1024, timeout: 120_000 }, (err, stdout, stderr) => {
       if (err) reject(new Error(`git ${args.join(" ")} 失败: ${stderr || err.message}`));
@@ -41,18 +49,19 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
   let branch: string | null = null, commit: string | null = null;
   try { branch = (await git(["rev-parse", "--abbrev-ref", "HEAD"], { cwd })).trim(); } catch { /* 无提交 */ }
   try { commit = (await git(["rev-parse", "HEAD"], { cwd })).trim(); } catch { commit = null; }
+  // -z：NUL 分隔且不引用路径，非 ASCII / 带空格的中文名才能按原样拿到（普通输出会变成 "\344\270\255…"）
   const out = await git(["status", "--porcelain=v1", "-z", "--untracked-files=all"], { cwd });
   const toks = out.split("\0").filter(Boolean);
   const entries: GitStatus["entries"] = [];
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
     if (t.length < 4) continue;
-    const x = t[0], y = t[1], p = t.slice(3);
+    const x = t[0], y = t[1], p = unquoteGitPath(t.slice(3));
     if (x === "R" || x === "C" || y === "R" || y === "C") {
-      const to = toks[++i];
+      const to = unquoteGitPath(toks[++i] ?? "");
       entries.push({ path: to, x, y, oldPath: p });
     } else {
-      entries.push({ path: p.replace(/^"|"$/g, ""), x, y });
+      entries.push({ path: p, x, y });
     }
   }
   return { branch, commit, entries };
@@ -60,6 +69,43 @@ export async function gitStatus(cwd: string): Promise<GitStatus> {
 
 export async function hashObject(cwd: string, file: string): Promise<string> {
   return (await git(["hash-object", "-w", "--", file], { cwd })).trim();
+}
+
+/**
+ * 解 git 的 C-style 引用路径。core.quotePath 默认开启时，非 ASCII 路径在
+ * ls-files / ls-tree 的普通输出里是 "\344\270\255\346\226\207.md" 这样的八进制串，
+ * 拿它去拼 path.join 或 isSafeRelPath 判定，结果是这台机器上根本不存在的路径 ——
+ * 跨机还原时基线里的中文名文件会被静默丢掉而回执一片绿。
+ * 带 -z 的输出不会引用路径（NUL 分隔、原样 UTF-8），这里的解码只作为兜底。
+ */
+export function unquoteGitPath(raw: string): string {
+  const s = raw.trim();
+  if (s.length < 2 || !s.startsWith('"') || !s.endsWith('"')) return raw;
+  const body = s.slice(1, -1);
+  const buf: number[] = [];
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (ch !== "\\") {
+      const code = body.codePointAt(i)!;
+      buf.push(...Buffer.from(String.fromCodePoint(code), "utf8"));
+      if (code > 0xffff) i++;
+      continue;
+    }
+    const n = body[i + 1] ?? "";
+    const esc: Record<string, number> = { t: 9, n: 10, r: 13, f: 12, v: 11, b: 8, '"': 34, "\\": 92 };
+    if (esc[n] !== undefined) { buf.push(esc[n]); i++; }
+    else if (/[0-7]/.test(n)) {
+      const oct = n + (/[0-7]/.test(body[i + 2] ?? "") ? body[i + 2] : "") + (/[0-7]/.test(body[i + 3] ?? "") ? body[i + 3] : "");
+      buf.push(parseInt(oct, 8)); i += oct.length;
+    } else { buf.push(ch.charCodeAt(0)); }
+  }
+  return Buffer.from(buf).toString("utf8");
+}
+
+/** 跑一条带 -z 的 git 命令并按 NUL 切成条目（顺带兜底解引用） */
+export async function gitNul(args: string[], cwd: string): Promise<string[]> {
+  const out = await git(args, { cwd });
+  return out.split("\0").filter((s) => s.length > 0).map(unquoteGitPath);
 }
 
 export async function sha256File(file: string): Promise<string> {
@@ -162,6 +208,51 @@ export function caseCollisions(paths: string[]): string[][] {
   return [...byKey.values()].filter((v) => new Set(v).size > 1);
 }
 
+/**
+ * 目标文件系统到底分不分大小写 —— 不靠 process.platform 猜（外接盘、WSL 挂载、
+ * Linux 上装的 case-insensitive 卷都可能相反），直接在目标目录里探一次。
+ * 只在真的发现碰撞时才调用，正常路径上不会多写一个探针文件。
+ * 探不了（目录不可写等）也返回 true：分不清就往"会静默覆盖"那侧判，绝不赌。
+ */
+export async function fileSystemIsCaseInsensitive(dir: string): Promise<boolean> {
+  const probe = `.acb-case-probe-${process.pid}-${Date.now()}`;
+  const lower = path.join(dir, probe);
+  const upper = path.join(dir, probe.toUpperCase());
+  try {
+    await fs.writeFile(lower, "");
+    return await fs.stat(upper).then(() => true).catch(() => false);
+  } catch {
+    return true;
+  } finally {
+    await fs.rm(lower, { force: true }).catch(() => {});
+  }
+}
+
+/** Win32 保留设备名（含带扩展名的形式）；在 Windows 上这些名字建不出来或不可管理 */
+const WIN_RESERVED = /^(?:con|prn|aux|nul|com[0-9]|lpt[0-9])(?:\..*)?$/i;
+
+/**
+ * 路径在 Windows 上的形态问题（不是安全判定，别和 isSafeRelPath 混起来）：
+ * 保留设备名、以点或空格结尾的段。Node 走 \\?\ 前缀能把它们写出来，
+ * 但资源管理器与多数命令行工具看不见或打不开 —— 跨机还原时必须说出来而不是默默落地。
+ */
+export function windowsNameIssues(relPath: string): string[] {
+  const out: string[] = [];
+  for (const seg of relPath.split("/")) {
+    if (!seg) continue;
+    if (WIN_RESERVED.test(seg)) out.push(`保留设备名 ${seg}`);
+    else if (/[. ]$/.test(seg)) out.push(`以${seg.endsWith(".") ? "点" : "空格"}结尾 ${seg}`);
+  }
+  return [...new Set(out)];
+}
+
+/** MAX_PATH：超过它 Windows 上的常规工具就处理不了（ACB 自己能写，但要如实提示） */
+export const WIN_MAX_PATH = 260;
+
+export function projectedPathLength(baseDir: string, relPath: string): number {
+  return path.join(baseDir, relPath.split("/").join(path.sep)).length;
+}
+
 export async function walkFiles(dir: string, base = dir, out: string[] = []): Promise<string[]> {
   for (const e of await fs.readdir(dir, { withFileTypes: true })) {
     const full = path.join(dir, e.name);
@@ -179,11 +270,11 @@ export async function exists(p: string): Promise<boolean> {
   try { await fs.access(p); return true; } catch { return false; }
 }
 
-/** 文件/符号链接的实测大小（符号链接按自身算，不计目标） */
+/** 文件/符号链接的实测大小（符号链接按自身算，不计目标；按字节数而非字符数，中文目标名不能少算） */
 export async function statSize(abs: string): Promise<number> {
   try {
     const st = await fs.lstat(abs);
-    if (st.isSymbolicLink()) return (await fs.readlink(abs)).length;
+    if (st.isSymbolicLink()) return Buffer.byteLength(await fs.readlink(abs), "utf8");
     return st.size;
   } catch {
     return 0;

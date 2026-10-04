@@ -1,11 +1,87 @@
 // Preview Module：把"将要打包什么、排除了什么、为什么"在动手之前摊开给人看。
 // 只做磁盘探测（plan），不读文件内容、不写任何文件，因此可以在大仓库上反复刷新。
-import { plan } from "./capture.js";
-import { caseCollisions, fmtBytes, isExcluded } from "./gitutil.js";
+import { plan, CAPTURE_MEMORY_LIMIT } from "./capture.js";
+import {
+  caseCollisions, fmtBytes, isExcluded, isSafeRelPath, windowsNameIssues,
+  projectedPathLength, WIN_MAX_PATH,
+} from "./gitutil.js";
 import type { ProjectConfig, CapturePreview, PreviewAlert, PreviewFile } from "../../shared/types.js";
 
 const LARGE_FILE = 5 * 1024 * 1024;      // 单文件 5MB 起提示
 const HUGE_REPO = 300 * 1024 * 1024;     // 对象库 300MB 起警告（bundle 会带走完整历史）
+
+/** 只列前若干条，避免告警本身把界面刷成一堵墙 */
+const LIST_CAP = 6;
+
+/**
+ * 路径形态判据 —— 审阅清单与打包入口共用同一份，
+ * 否则会出现"界面说阻塞、CLI 却照样打出包"的两套规则。
+ * 只看路径与目录长度，不读任何文件内容。
+ */
+export function pathFidelityAlerts(paths: string[], baseDir?: string): PreviewAlert[] {
+  const alerts: PreviewAlert[] = [];
+
+  // 大小写碰撞：Windows/macOS 默认文件系统不分大小写，恢复时后者会静默覆盖前者
+  for (const group of caseCollisions(paths)) {
+    alerts.push({
+      level: "阻塞",
+      title: `路径仅大小写不同：${group.join(" / ")}`,
+      detail: "这些路径只在大小写上不同。Windows 与 macOS 默认文件系统不分大小写，恢复时其中一个会被另一个静默覆盖，代码指纹随之不一致。",
+      action: "先在源仓库把其中一个改名（例如加目录前缀），再创建交接；ACB 不会替你的项目改名。",
+    });
+  }
+
+  // 无法安全映射到其它机器的路径（拼进目标目录就会写到外面）
+  for (const p of paths) {
+    if (isSafeRelPath(p)) continue;
+    alerts.push({
+      level: "阻塞",
+      title: `路径无法安全落地：${p}`,
+      detail: "含绝对路径、盘符、UNC、.. 片段或控制字符；写入它会把内容带到目标目录之外。",
+      action: "在源仓库把该条目改名或移出纳入范围，再创建交接。",
+    });
+  }
+
+  // Windows 命名问题（保留设备名、以点/空格结尾）：接收端可能是 Linux，所以只警告
+  const named = paths.filter((p) => windowsNameIssues(p).length > 0);
+  if (named.length) {
+    alerts.push({
+      level: "警告",
+      title: `${named.length} 个路径在 Windows 上不可命名：${named.slice(0, LIST_CAP).map((p) => `${p}（${windowsNameIssues(p)[0]}）`).join("、")}${named.length > LIST_CAP ? " 等" : ""}`,
+      detail: "Windows 把 CON/NUL/COM1 之类名字保留给设备，也不接受以点或空格结尾的段。ACB 用扩展长度路径仍能按字节写出，但资源管理器与多数工具看不见、打不开，删除也要特殊手段。",
+      action: "接收端包含 Windows 就先在源仓库改名；确认只交给 Linux/macOS 可以继续。",
+    });
+  }
+
+  // 超长路径：ACB 写得出来，接收端的其它工具未必能用
+  if (baseDir) {
+    const long = paths
+      .map((p) => ({ p, len: projectedPathLength(baseDir, p) }))
+      .filter((x) => x.len > WIN_MAX_PATH)
+      .sort((a, b) => b.len - a.len);
+    if (long.length) {
+      alerts.push({
+        level: "警告",
+        title: `${long.length} 个路径拼上目录后超过 ${WIN_MAX_PATH} 字符（最长 ${long[0].len}）`,
+        detail: `ACB 用扩展长度路径能恢复，但资源管理器复制、部分构建工具与老脚本会在超长路径上失败：${long.slice(0, LIST_CAP).map((x) => `${x.p} (${x.len})`).join("、")}${long.length > LIST_CAP ? " 等" : ""}。`,
+        action: "把项目放在更短的根路径下（如 D:\\dev\\p），或在源仓库压平过深的目录层级。",
+      });
+    }
+  }
+  return alerts;
+}
+
+/** 纳入范围的全部路径（改动 + 未被排除的基线树）——预览与打包用同一个口径，别各写一遍 */
+export function fidelityScopePaths(changedPaths: string[], baselinePaths: string[]): string[] {
+  return [...changedPaths, ...baselinePaths.filter((p) => !isExcluded(p))];
+}
+
+/** 打包入口用的判据：有阻塞项就说明这个包注定无法忠实还原，先拦住 */
+export function pathFidelityBlockerMessage(paths: string[]): string | null {
+  const blockers = pathFidelityAlerts(paths).filter((a) => a.level === "阻塞");
+  if (!blockers.length) return null;
+  return blockers.map((b) => `${b.title} —— ${b.detail} 出路：${b.action}`).join(" ; ");
+}
 
 export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> {
   const p0 = await plan(cfg.path);
@@ -27,23 +103,15 @@ export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> 
     });
   }
 
-  // 2. 大小写碰撞：Windows/macOS 默认文件系统不分大小写，恢复时后者会静默覆盖前者
-  const collisions = caseCollisions([...included.map((f) => f.path), ...p0.baselinePaths.filter((p) => !isExcluded(p))]);
-  for (const group of collisions) {
-    alerts.push({
-      level: "阻塞",
-      title: `路径仅大小写不同：${group.join(" / ")}`,
-      detail: "这些路径只在大小写上不同。Windows 与 macOS 默认文件系统不分大小写，恢复时其中一个会被另一个静默覆盖，代码指纹随之不一致。",
-      action: "先在源仓库把其中一个改名（例如加目录前缀），再创建交接；ACB 不会替你的项目改名。",
-    });
-  }
+  // 2. 路径形态：改动 + 基线树一起判（基线里的中文名/仅大小写不同同样会在接收端互相覆盖或落不了地）
+  alerts.push(...pathFidelityAlerts(fidelityScopePaths(included.map((f) => f.path), p0.baselinePaths), cfg.path));
 
   // 3. 已提交进历史的凭据：排除策略只挡工作区改动，挡不住 bundle 携带的历史
   if (p0.baselineSecrets.length) {
     alerts.push({
       level: "警告",
       title: `${p0.baselineSecrets.length} 个凭据文件已在 Git 历史中`,
-      detail: `${p0.baselineSecrets.slice(0, 6).join("、")}${p0.baselineSecrets.length > 6 ? " 等" : ""} 已被提交。基线 bundle 随包携带完整历史，纳入策略无法阻止历史里的内容离开这台电脑。`,
+      detail: `${p0.baselineSecrets.slice(0, LIST_CAP).join("、")}${p0.baselineSecrets.length > LIST_CAP ? " 等" : ""} 已被提交。基线 bundle 随包携带完整历史，纳入策略无法阻止历史里的内容离开这台电脑。`,
       action: "要跨机交接就先确认这些是测试夹具；若是真凭据，请改用只含本机的历史清理（git filter-repo / BFG）或换用只带所需的仓库，并在接收端轮换该凭据。",
     });
   }
@@ -65,7 +133,7 @@ export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> 
     alerts.push({
       level: "警告",
       title: `${unreadable.length} 个路径读不到内容`,
-      detail: `${unreadable.map((f) => f.path).slice(0, 6).join("、")}${unreadable.length > 6 ? " 等" : ""} 在工作区里被 git 报为改动，但内容取不到（常见于指向不存在目标的符号链接）。`,
+      detail: `${unreadable.map((f) => f.path).slice(0, LIST_CAP).join("、")}${unreadable.length > LIST_CAP ? " 等" : ""} 在工作区里被 git 报为改动，但内容取不到（常见于指向不存在目标的符号链接）。`,
       action: "接收端不会凭空出现这些文件。先修复链接目标或删掉它们，再创建交接。",
     });
   }
@@ -77,6 +145,17 @@ export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> 
       title: `仓库对象约 ${fmtBytes(p0.repoBytes)}，打包会明显偏慢`,
       detail: "为了让接收端不必再克隆原仓库，交接包用 git bundle 携带完整历史；历史越大，封存与导出越久，交接文件也越大。",
       action: "首次交接后，第二台电脑直接 git clone 原仓库再接收交接包会快得多；或用 git shallow/过滤历史瘦身。",
+    });
+  }
+
+  // 6.5 恢复材料整体驻留内存的上限：让用户在点按钮之前就知道会不会被打回来
+  const pendingBytes = included.reduce((s, f) => s + (f.status === "deleted" ? 0 : f.bytes), 0);
+  if (pendingBytes > CAPTURE_MEMORY_LIMIT / 3) {
+    alerts.push({
+      level: "警告",
+      title: `改动内容约 ${fmtBytes(pendingBytes)}，需要整体读进内存`,
+      detail: `单次捕获的内存上限是 ${fmtBytes(CAPTURE_MEMORY_LIMIT)}，超过就会被拦下（不会半途把机器读到卡死）。通常是二进制或生成物混进了改动范围。`,
+      action: "把可再生产物加进 .gitignore，或改用「发布到 GitHub 交接分支」——那条路径按 git 对象传输，不需要整体驻留内存。",
     });
   }
 
@@ -97,7 +176,20 @@ export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> 
       level: "提示",
       title: `${symlinks.length} 个符号链接按链接目标保存`,
       detail: `与 Git 一致，符号链接存的是目标路径文本（${symlinks.slice(0, 4).map((f) => f.path).join("、")}${symlinks.length > 4 ? " 等" : ""}）。若目标是绝对路径或指向仓库外，接收端会悬空。`,
-      action: "恢复到 Windows 时若没有创建符号链接的权限，ACB 会退回写成普通文件并在报告里如实标注，届时请手动补链接。",
+      action: "恢复到 Windows 时若没有创建符号链接的权限，ACB 会先试无权限要求的目录联接，再退回写成普通文件并在报告里如实标注，届时请手动补链接。",
+    });
+  }
+
+  if (p0.emptyDirs.length || p0.scanTruncated) {
+    alerts.push({
+      level: "提示",
+      title: p0.emptyDirs.length
+        ? `${p0.emptyDirs.length} 个空目录会一并重建`
+        : "空目录扫描达到上限",
+      detail: p0.emptyDirs.length
+        ? `Git 不保存空目录，所以它们既不在改动清单也不在基线树里：${p0.emptyDirs.slice(0, LIST_CAP).join("、")}${p0.emptyDirs.length > LIST_CAP ? " 等" : ""}。不单独带过去，接收端就缺这些目录（常见于 uploads/、logs/ 这类运行时占位）。`
+        : "空目录扫描在达到上限时被截断，本次没有列出可重建的空目录，可能仍有遗漏。",
+      action: "无需操作，恢复时会 mkdir 重建；若某目录里有被 .gitignore 掉的文件，那不属于空目录，需要接收端自行创建。",
     });
   }
 
@@ -115,10 +207,12 @@ export async function buildPreview(cfg: ProjectConfig): Promise<CapturePreview> 
     includedBytes,
     excluded: p0.excluded,
     baselineSecrets: p0.baselineSecrets,
+    emptyDirs: p0.emptyDirs,
+    emptyDirsTruncated: p0.scanTruncated,
     alerts,
     checksConfigured: cfg.checks.length,
     env: { os: process.platform, runtime: `node ${process.version}`, git: ">=2.20" },
-    bundleNote: `基线 bundle 额外携带完整历史（约 ${fmtBytes(p0.repoBytes)} · ${p0.objects} 个对象）`,
+    bundleNote: `基线 bundle 额外携带完整历史（约 ${fmtBytes(p0.repoBytes)} · ${p0.objects} 个对象）· 基线树 ${p0.baselinePaths.length} 个路径`,
   };
 }
 

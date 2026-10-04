@@ -9,9 +9,12 @@ import { addProject, loadResumeReports, saveResumeReport } from "../server/core/
 import { createHandoff } from "../server/core/workflow.js";
 import { publishLocal, publishGithub } from "../server/core/transport.js";
 import { resumeFromArchive, previewArchiveResume } from "../server/core/resume.js";
-import { checkEntries } from "../server/core/package.js";
-import { buildPreview } from "../server/core/preview.js";
-import { isGitRepo, isSafeRelPath, caseCollisions, DEFAULT_EXCLUDES, EXCLUSION_REASONS } from "../server/core/gitutil.js";
+import { checkEntries, buildManifest } from "../server/core/package.js";
+import { buildPreview, pathFidelityAlerts } from "../server/core/preview.js";
+import {
+  isGitRepo, isSafeRelPath, caseCollisions, DEFAULT_EXCLUDES, EXCLUSION_REASONS,
+  unquoteGitPath, windowsNameIssues,
+} from "../server/core/gitutil.js";
 import type { ProjectConfig } from "../shared/types.js";
 
 const T = path.join(os.tmpdir(), "acb-e2e-" + Date.now());
@@ -295,7 +298,152 @@ async function main() {
   check("现场就绪：索引里同时有 A.ts 与 a.ts", /A\.ts/.test(stC2) && /a\.ts/.test(stC2), stC2);
   check("仅大小写不同的路径会让打包停下来（Windows 恢复会静默覆盖）", /大小写/.test(caseMsg) && /改名/.test(caseMsg), caseMsg);
 
-  // ========== 7.10 检查用的临时物化目录用完即清 ==========
+  // ========== 7.10 非 ASCII 基线文件 / 目录链接 / 空目录的跨机保真 ==========
+  // 现场自己造：git 默认 core.quotePath=true，非 ASCII 路径在 ls-tree/ls-files 的普通输出里
+  // 是 "\344\270\255…" 引用串；按那种串去拼路径会得到本机不存在的路径，
+  // 于是中文名文件被静默跳过、而回执写着"基线已重建"。这一节就是钉住这条。
+  const repoU = path.join(T, "repoUni");
+  await fs.mkdir(path.join(repoU, "src", "\u6587\u6863"), { recursive: true });
+  await fs.mkdir(path.join(repoU, "\u5360\u4f4d"), { recursive: true });   // 空目录：Git 不保存
+  await fs.mkdir(path.join(repoU, "logs"), { recursive: true });           // 又一个空目录
+  sh("git init -q && git config user.email t@t && git config user.name t", repoU);
+  await fs.writeFile(path.join(repoU, "README.md"), "# u\n");
+  await fs.writeFile(path.join(repoU, "\u4e2d\u6587\u6587\u4ef6.md"), "# \u4e2d\u6587\u547d\u540d\n");
+  await fs.writeFile(path.join(repoU, "src", "\u6587\u6863", "\u63a5\u53e3.ts"), "export const api = 1;\n");
+  await fs.writeFile(path.join(repoU, "run.sh"), "#!/bin/sh\n");
+  sh("git add -A && git commit -qm base", repoU);
+  // 指向目录的符号链接：与 7.7 同一手法（索引里记 120000，内容就是目标文本）
+  await fs.writeFile(path.join(repoU, "\u6307\u5411\u6e90\u7801"), "src");
+  const dirBlob = sh("git hash-object -w -- \u6307\u5411\u6e90\u7801", repoU).toString().trim();
+  sh("git update-index --add --cacheinfo 120000," + dirBlob + ",\u6307\u5411\u6e90\u7801", repoU);
+  sh("git update-index --chmod=+x run.sh", repoU);
+  await fs.writeFile(path.join(repoU, "src", "mod.ts"), "export const m = 1;\n");
+  await fs.writeFile(path.join(repoU, "src", "\u6587\u6863", "\u65b0\u589e.ts"), "export const n = 2;\n");
+  await fs.writeFile(path.join(repoU, ".env"), "SECRET=keep-on-this-machine\n");
+  const cfgU: ProjectConfig = { projectId: "prj_uni", name: "unicode-repo", path: repoU, checks: [] };
+  await addProject(cfgU);
+  const prevU = await buildPreview(cfgU);
+  check("\u975e ASCII \u8def\u5f84\u5728\u5ba1\u9605\u6e05\u5355\u91cc\u662f\u771f\u5b9e\u540d\u5b57\uff08\u4e0d\u662f\u516b\u8fdb\u5236\u5f15\u7528\u4e32\uff09",
+    prevU.included.some((f) => f.path === "src/\u6587\u6863/\u65b0\u589e.ts") && !prevU.included.some((f) => f.path.includes("\\34")),
+    JSON.stringify(prevU.included.map((f) => f.path)));
+  check("\u7a7a\u76ee\u5f55\u88ab\u8bc6\u522b\u5e76\u5199\u8fdb\u5ba1\u9605\u6e05\u5355",
+    prevU.emptyDirs.includes("\u5360\u4f4d") && prevU.emptyDirs.includes("logs"), JSON.stringify(prevU.emptyDirs));
+  check("\u7a7a\u76ee\u5f55\u544a\u8b66\u8bf4\u660e\u4e86 Git \u4e0d\u4fdd\u5b58\u5b83\u4eec",
+    prevU.alerts.some((a) => /\u7a7a\u76ee\u5f55/.test(a.title)), JSON.stringify(prevU.alerts.map((a) => a.title)));
+  const createdU = await createHandoff(cfgU, { taskName: "\u975e ASCII \u4e0e\u7a7a\u76ee\u5f55\u4fdd\u771f", runChecks: false });
+  check("\u7a7a\u76ee\u5f55\u8fdb\u5165\u4ea4\u63a5\u72b6\u6001", (createdU.record.state.emptyDirs ?? []).length >= 2, JSON.stringify(createdU.record.state.emptyDirs));
+  const archiveU = path.join(T, `acb-${createdU.record.handoffId}.acb.tar.gz`);
+  await publishLocal(createdU.record, archiveU);
+  const uniDir = path.join(T, "repoUniRestored");
+  const rU = await resumeFromArchive({ filePath: archiveU, targetDir: uniDir, source: archiveU });
+  check("\u4e2d\u6587\u540d\u57fa\u7ebf\u6587\u4ef6\u771f\u7684\u843d\u5230\u4e86\u76ee\u5f55", await fs.stat(path.join(uniDir, "\u4e2d\u6587\u6587\u4ef6.md")).then(() => true).catch(() => false));
+  check("\u4e2d\u6587\u76ee\u5f55\u4e0b\u7684\u57fa\u7ebf\u6587\u4ef6\u843d\u5730", await fs.stat(path.join(uniDir, "src", "\u6587\u6863", "\u63a5\u53e3.ts")).then(() => true).catch(() => false));
+  const stU = sh("git status --porcelain", uniDir).toString();
+  check("\u6062\u590d\u540e git \u770b\u4e0d\u5230\u6b8b\u7f3a\uff08\u6ca1\u6709\u5de5\u4f5c\u533a\u5220\u9664\uff09", !/^. D /.test(stU), stU);
+  check("\u7a7a\u76ee\u5f55\u5728\u63a5\u6536\u7aef\u91cd\u5efa",
+    (await fs.stat(path.join(uniDir, "\u5360\u4f4d")).then((s) => s.isDirectory()).catch(() => false))
+    && (await fs.stat(path.join(uniDir, "logs")).then((s) => s.isDirectory()).catch(() => false)));
+  check("\u76ee\u5f55\u7b26\u53f7\u94fe\u63a5\u4fdd\u7559 120000 \u6a21\u5f0f",
+    /^120000\s+[0-9a-f]{40}\s+\d+\s+\u6307\u5411\u6e90\u7801$/m.test(sh("git -c core.quotepath=false ls-files -s", uniDir).toString()),
+    sh("git -c core.quotepath=false ls-files -s", uniDir).toString());
+  const dirLinkLstat = await fs.lstat(path.join(uniDir, "\u6307\u5411\u6e90\u7801")).catch(() => null);
+  const dirLinkReported = rU.report.steps.some((s) => /\u76ee\u5f55\u8054\u63a5|\u7b26\u53f7\u94fe\u63a5/.test(s.title))
+    || rU.report.gaps.some((g) => /\u7b26\u53f7\u94fe\u63a5/.test(g.title));
+  console.log(`      \uff08\u76ee\u5f55\u94fe\u63a5\u5f62\u6001\uff1a${dirLinkLstat?.isSymbolicLink() ? "\u5df2\u6309\u94fe\u63a5\u91cd\u5efa" : dirLinkLstat ? "\u9000\u5316\u4e3a\u666e\u901a\u6587\u4ef6\uff08\u672c\u673a\u65e0\u7279\u6743\uff09" : "\u672a\u843d\u5730"}\uff09`);
+  check("\u76ee\u5f55\u94fe\u63a5\u8981\u4e48\u662f\u94fe\u63a5\u3001\u8981\u4e48\u5982\u5b9e\u62a5\u544a\uff0c\u4e0d\u80fd\u9759\u9ed8",
+    !!dirLinkLstat && (dirLinkLstat.isSymbolicLink() || dirLinkReported));
+  check("\u53ef\u6267\u884c\u4f4d\u5728\u4e2d\u6587\u8def\u5f84\u4ed3\u5e93\u91cc\u4e5f\u4e0d\u4e22",
+    /^100755\s+[0-9a-f]{40}\s+\d+\s+run\.sh$/m.test(sh("git ls-files -s", uniDir).toString()));
+  check("\u5f62\u6001\u4fdd\u771f\u7684\u5305\u6062\u590d\u540e\u6307\u7eb9\u4e00\u81f4", rU.report.digestMatch === true,
+    rU.report.steps.find((s) => s.title === "\u4ee3\u7801\u6307\u7eb9\u590d\u7b97")?.detail ?? "");
+  check("\u57fa\u7ebf\u7269\u5316\u7ed9\u51fa\u9884\u671f/\u5b9e\u9645/\u672a\u843d\u5730\u4e09\u4e2a\u6570",
+    (rU.report.baselineExpected ?? 0) >= 3 && rU.report.baselineWritten === rU.report.baselineExpected
+    && (rU.report.baselineSkipped ?? []).length === 0,
+    JSON.stringify({ exp: rU.report.baselineExpected, w: rU.report.baselineWritten, skip: rU.report.baselineSkipped }));
+  check("\u51ed\u636e\u4e0d\u4f1a\u88ab\u5e26\u5230\u63a5\u6536\u7aef", !await fs.stat(path.join(uniDir, ".env")).then(() => true).catch(() => false));
+  const uniBaselineStep = rU.report.steps.find((s) => s.title === "\u57fa\u7ebf\u7269\u5316");
+  check("\u57fa\u7ebf\u56de\u6267\u6587\u6848\u70b9\u51fa\u4e86\u94fe\u63a5\u4e0e\u6267\u884c\u4f4d\u7684\u6570\u91cf",
+    !!uniBaselineStep && /120000|100755|\u7b26\u53f7\u94fe\u63a5|\u53ef\u6267\u884c/.test(uniBaselineStep.detail), uniBaselineStep?.detail ?? "");
+
+  // ========== 7.11 \u9010\u9879\u56de\u6267\uff1a\u53ea\u5728\u76ee\u6807\u7684\u672c\u673a\u6587\u4ef6\u5fc5\u987b\u770b\u89c1 ==========
+  const leftoverDir = path.join(T, "repoLeftover");
+  await fs.mkdir(leftoverDir, { recursive: true });
+  await fs.writeFile(path.join(leftoverDir, "\u672c\u673a\u65e7\u6587\u4ef6.txt"), "\u8fd9\u662f\u63a5\u6536\u7535\u8111\u81ea\u5df1\u7684\u4e1c\u897f\n");
+  const preL = await previewArchiveResume({ filePath: archiveU, targetDir: leftoverDir, source: archiveU });
+  check("\u9884\u89c8\u5c31\u80fd\u770b\u89c1\u300c\u53ea\u5728\u76ee\u6807\u300d\u7684\u672c\u673a\u6587\u4ef6",
+    (preL.onlyInTarget ?? []).includes("\u672c\u673a\u65e7\u6587\u4ef6.txt"), JSON.stringify(preL.onlyInTarget));
+  check("\u9884\u89c8\u62ff\u5230\u4e86\u57fa\u7ebf\u6e05\u5355\uff08\u80fd\u533a\u5206\u5305\u5185\u5bb9\u4e0e\u672c\u673a\u6587\u4ef6\uff09",
+    preL.baselineListed === true && (preL.baselineMissingInTarget ?? 0) >= 3,
+    JSON.stringify({ listed: preL.baselineListed, missing: preL.baselineMissingInTarget, total: preL.packagePathCount }));
+  const rL = await resumeFromArchive({ filePath: archiveU, targetDir: leftoverDir, source: archiveU, onConflict: "skip" });
+  check("\u56de\u6267\u5217\u51fa\u300c\u53ea\u5728\u76ee\u6807\u300d\u7684\u672c\u673a\u6587\u4ef6",
+    (rL.report.receipt?.onlyInTarget ?? []).includes("\u672c\u673a\u65e7\u6587\u4ef6.txt"), JSON.stringify(rL.report.receipt));
+  check("\u300c\u53ea\u5728\u76ee\u6807\u300d\u4e0d\u628a\u4ea4\u63a5\u5185\u5bb9\u7b97\u8fdb\u53bb",
+    !(rL.report.receipt?.onlyInTarget ?? []).includes("README.md"));
+  check("\u6062\u590d\u62a5\u544a\u6b63\u6587\u91cc\u6709\u9010\u9879\u5bf9\u8d26\u4e00\u680f",
+    (await fs.readFile(path.join(leftoverDir, "ACB-RESUME-REPORT.md"), "utf8")).includes("\u53ea\u5728\u76ee\u6807"));
+
+  // ========== 7.12 \u78b0\u649e\u5305\u5728\u672c\u673a\u8fd8\u539f\uff1a\u5199\u5165\u524d\u62e6\u4f4f\uff0c\u800c\u4e0d\u662f\u6253\u5b8c\u518d\u62a5\u6307\u7eb9\u4e0d\u4e00\u81f4 ==========
+  // \u73b0\u573a\u81ea\u5df1\u9020\uff1a\u590d\u5236\u4e00\u4efd\u5df2\u5c01\u5b58\u7684\u5305\uff0c\u5f80\u72b6\u6001\u91cc\u63d2\u4e00\u4e2a\u4e0e\u73b0\u6709\u6587\u4ef6\u53ea\u5dee\u5927\u5c0f\u5199\u7684\u8def\u5f84\uff0c
+  // \u518d\u91cd\u5efa manifest\uff08\u5426\u5219\u5148\u6302\u5728\u5b8c\u6574\u6027\u4e0a\uff0c\u5c31\u6d4b\u4e0d\u5230\u78b0\u649e\u5224\u636e\uff09\u3002
+  const evilPkg = path.join(T, "pkgCaseCollide");
+  await fs.cp(createdU.record.packageDir, evilPkg, { recursive: true });
+  const evilStatePath = path.join(evilPkg, "acb-state", "project-state.json");
+  const evilState = JSON.parse(await fs.readFile(evilStatePath, "utf8"));
+  const victim = evilState.changes.find((c: { path: string }) => /mod\.ts$/.test(c.path)) ?? evilState.changes[0];
+  evilState.changes.push({ ...victim, path: victim.path.replace("mod.ts", "MOD.ts"), staged: false });
+  await fs.writeFile(evilStatePath, JSON.stringify(evilState, null, 2));
+  const collisionManifest = await buildManifest(evilPkg, evilState);
+  await fs.writeFile(path.join(evilPkg, "manifest.json"), JSON.stringify(collisionManifest, null, 2));
+  const collideDir = path.join(T, "repoCollide");
+  const rCol = await resumeFromArchive({ packageDir: evilPkg, targetDir: collideDir, source: "\u672c\u673a\u5b58\u50a8\uff08\u4f2a\u9020\u78b0\u649e\u5305\uff09" });
+  check("\u4f2a\u9020\u540e\u5305\u5b8c\u6574\u6027\u4ecd\u901a\u8fc7\uff08\u6d4b\u7684\u662f\u78b0\u649e\u5224\u636e\u4e0d\u662f\u635f\u574f\u5224\u636e\uff09",
+    rCol.report.steps.some((s) => s.title === "\u6062\u590d\u524d\u6821\u9a8c" && s.ok),
+    JSON.stringify(rCol.report.steps[1]));
+  check("\u78b0\u649e\u5305\u5728\u5199\u5165\u524d\u88ab\u62e6\u4f4f\uff08\u4e00\u4e2a\u5b57\u8282\u90fd\u6ca1\u5199\uff09",
+    rCol.report.verdict === "\u6062\u590d\u88ab\u963b\u585e" && (rCol.report.restoredCount ?? -1) === 0
+    && !(await fs.stat(path.join(collideDir, "README.md")).then(() => true).catch(() => false)),
+    JSON.stringify({ verdict: rCol.report.verdict, restored: rCol.report.restoredCount }));
+  check("\u62e6\u4f4f\u7406\u7531\u70b9\u540d\u5927\u5c0f\u5199\u5e76\u7ed9\u51fa\u4e24\u6761\u51fa\u8def",
+    /大小写/.test(rCol.report.gaps.map((g) => g.title + g.detail).join(" "))
+    && /\u533a\u5206\u5927\u5c0f\u5199|\u6539\u540d/.test(rCol.report.gaps.map((g) => g.detail).join(" ")),
+    JSON.stringify(rCol.report.gaps));
+
+  // ========== 7.13 \u8def\u5f84\u5224\u636e\u51fd\u6570\u81ea\u8eab\uff08\u4e0d\u9760\u672c\u673a\u73af\u5883\u6070\u5de7\u6ee1\u8db3\uff09 ==========
+  check("unquoteGitPath \u8fd8\u539f git \u7688\u516b\u8fdb\u5236\u5f15\u7528\u4e32",
+    unquoteGitPath('"\\344\\270\\255\\346\\226\\207\\346\\226\\207\\344\\273\\266.md"') === "\u4e2d\u6587\u6587\u4ef6.md"
+    && unquoteGitPath('"a\\tb"') === "a\tb"
+    && unquoteGitPath("src/plain.ts") === "src/plain.ts",
+    unquoteGitPath('"\\344\\270\\255\\346\\226\\207\\346\\226\\207\\344\\273\\266.md"'));
+  check("windowsNameIssues \u8ba4\u51fa\u4fdd\u7559\u8bbe\u5907\u540d\u4e0e\u7ed3\u5c3e\u70b9/\u7a7a\u683c",
+    windowsNameIssues("src/nul").length === 1 && windowsNameIssues("a/COM1.log").length === 1
+    && windowsNameIssues("bad dir ./x").length > 0 && windowsNameIssues("src/main.ts").length === 0,
+    JSON.stringify([windowsNameIssues("src/nul"), windowsNameIssues("a/COM1.log"), windowsNameIssues("src/main.ts")]));
+  check("pathFidelityAlerts \u628a\u4e0d\u53ef\u547d\u540d\u8def\u5f84\u5217\u4e3a\u8b66\u544a\uff08\u4e0d\u9759\u9ed8\u5e26\u8fc7\uff09",
+    pathFidelityAlerts(["src/nul", "ok.ts"]).some((a) => a.level === "\u8b66\u544a" && /Windows/.test(a.title)),
+    JSON.stringify(pathFidelityAlerts(["src/nul"])));
+  check("pathFidelityAlerts \u70b9\u540d\u8d85\u957f\u8def\u5f84",
+    pathFidelityAlerts(["a/b", "x".repeat(300)], "C:\\dev\\p").some((a) => /260/.test(a.title)));
+  check("pathFidelityAlerts \u7684\u963b\u585e\u5224\u636e\u4e0e\u6253\u5305\u5165\u53e3\u540c\u4e00\u4e2a\uff08\u4e0d\u662f\u4e24\u5957\u89c4\u5219\uff09",
+    pathFidelityAlerts(["src/A.ts", "src/a.ts"]).every((a) => a.level === "\u963b\u585e")
+    && pathFidelityAlerts(["src/A.ts", "src/a.ts"]).length >= 1);
+
+  // ========== 7.14 GitHub \u8def\u5f84\u4e5f\u8981\u4fdd\u7559\u5f62\u6001\uff08\u5199\u6b7b 100644 \u4f1a\u628a\u94fe\u63a5\u4e0e\u6267\u884c\u4f4d\u62b9\u5e73\uff09 ==========
+  const bareU = path.join(T, "remoteU.git");
+  sh(`git init -q --bare "${bareU}"`, T);
+  const { receipt: ghU } = await publishGithub(repoU, createdU.record, bareU);
+  check("\u975e ASCII/\u5f62\u6001\u4fdd\u771f\u7684\u5305\u80fd\u53d1\u5e03\u5230\u4ea4\u63a5\u5206\u652f", ghU.state === "\u5df2\u53d1\u5e03" && ghU.readBackConfirmed, JSON.stringify(ghU));
+  const ghUDir = path.join(T, "repoUniFromGithub");
+  const ghURes = await resumeFromGithub({ remote: bareU, handoffId: createdU.record.handoffId, targetDir: ghUDir });
+  check("GitHub \u8def\u5f84\u6062\u590d\u540e\u6307\u7eb9\u4e00\u81f4", ghURes.report.digestMatch === true,
+    ghURes.report.steps.find((s) => s.title === "\u4ee3\u7801\u6307\u7eb9\u590d\u7b97")?.detail ?? "");
+  const ghIdx = sh("git -c core.quotepath=false ls-files -s", ghUDir).toString();
+  check("GitHub \u8def\u5f84\u4fdd\u7559 100755 \u6267\u884c\u4f4d", /^100755\s+[0-9a-f]{40}\s+\d+\s+run\.sh$/m.test(ghIdx), ghIdx);
+  check("GitHub \u8def\u5f84\u4fdd\u7559 120000 \u7b26\u53f7\u94fe\u63a5", /^120000\s+[0-9a-f]{40}\s+\d+\s+\u6307\u5411\u6e90\u7801$/m.test(ghIdx), ghIdx);
+  check("GitHub \u8def\u5f84\u4e5f\u91cd\u5efa\u7a7a\u76ee\u5f55", await fs.stat(path.join(ghUDir, "\u5360\u4f4d")).then((s) => s.isDirectory()).catch(() => false));
+  check("GitHub \u8def\u5f84\u7684\u4e2d\u6587\u57fa\u7ebf\u6587\u4ef6\u843d\u5730", await fs.stat(path.join(ghUDir, "\u4e2d\u6587\u6587\u4ef6.md")).then(() => true).catch(() => false));
+
+  // ========== 7.15 检查用的临时物化目录用完即清 ==========
   // 只断言本次自己创建的那几个快照目录：同名前缀的其它目录可能属于并行运行，不该由本测试处置
   const mySnaps = [created.snapshot.id, createdM.record.state.snapshotId, createdS.record.state.snapshotId];
   const nowDirs = await checkDirs();

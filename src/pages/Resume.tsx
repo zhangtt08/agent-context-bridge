@@ -316,6 +316,43 @@ export default function Resume() {
                     <span className="xs muted">清单 {latest.entryCount} · 核对 {latest.verifiedCount ?? "—"} · 写入 {latest.restoredCount ?? "—"}</span>
                   </div>
                 )}
+                {latest.baselineExpected !== undefined && (
+                  <div className="li-row" style={{ padding: "9px 0" }}>
+                    <span className={"badge " + ((latest.baselineSkipped?.length ?? 0) === 0 ? "teal" : "red")}>基线 {(latest.baselineWritten ?? 0)}/{latest.baselineExpected}</span>
+                    <span className="xs muted">未改动文件从 bundle 重建的实测对账{latest.baselineSkipped?.length ? ` · ${latest.baselineSkipped.length} 个未落地` : ""}</span>
+                  </div>
+                )}
+                {latest.receipt && (
+                  <>
+                    <div className="xs muted" style={{ marginTop: 8, marginBottom: 4 }}>逐项对账</div>
+                    <div className="scope-list" style={{ maxHeight: 190 }}>
+                      <div className="scope-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                        <span className="p">一致（目标里本来就有）</span><span className="b">{latest.receipt.identical}</span>
+                      </div>
+                      <div className="scope-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                        <span className="p">变更（按「覆盖」替换）</span><span className="b">{latest.receipt.overwritten}</span>
+                      </div>
+                      <div className="scope-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                        <span className="p">空目录重建</span><span className="b">{latest.receipt.emptyDirsRestored}</span>
+                      </div>
+                      <div className="scope-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="p">只在包里 · {latest.receipt.onlyInPackageCount} 项未落地</div>
+                          {latest.receipt.onlyInPackage.length > 0 && <div className="why mono">{latest.receipt.onlyInPackage.slice(0, 3).join("；")}</div>}
+                        </div>
+                        <span className={"badge " + (latest.receipt.onlyInPackageCount ? "red" : "teal")}>{latest.receipt.onlyInPackageCount ? "不完整" : "无"}</span>
+                      </div>
+                      <div className="scope-row" style={{ gridTemplateColumns: "1fr auto" }}>
+                        <div style={{ minWidth: 0 }}>
+                          <div className="p">只在目标 · 本机自己的文件</div>
+                          {latest.receipt.onlyInTarget.length > 0 && <div className="why mono">{latest.receipt.onlyInTarget.slice(0, 3).join("、")}</div>}
+                        </div>
+                        <span className="badge">{latest.receipt.onlyInTargetCount}</span>
+                      </div>
+                    </div>
+                    <div className="xs faint" style={{ marginTop: 6 }}>「只在包里」不为空就说明这次还原并不完整，逐条给出原因；完整清单在目标目录的 ACB-RESUME-REPORT.md。</div>
+                  </>
+                )}
                 {latest.archiveSha256 && (
                   <div className="xs faint mono" style={{ wordBreak: "break-all", padding: "6px 0" }}>归档 sha256 {latest.archiveSha256.slice(0, 32)}…（与源端导出回执比对）</div>
                 )}

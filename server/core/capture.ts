@@ -5,8 +5,8 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
-  GitStatus, git, gitStatus, id, isExcluded, exclusionInfo, sourceDigest, ensureDir,
-  statSize, looksLikeSecret, repoSize, fmtBytes, isSafeRelPath,
+  GitStatus, gitStatus, id, isExcluded, exclusionInfo, sourceDigest, ensureDir,
+  statSize, looksLikeSecret, repoSize, fmtBytes, isSafeRelPath, gitNul, DEFAULT_EXCLUDES,
 } from "./gitutil.js";
 import type { ExcludeReason, Observation } from "../../shared/types.js";
 
@@ -42,6 +42,10 @@ export interface CapturePlan {
   baselineSecrets: string[];
   repoBytes: number;
   objects: number;
+  /** 工作区里的空目录：Git 不跟踪它们，不单独带就会在另一台电脑上消失 */
+  emptyDirs: string[];
+  /** 扫描是否触到上限被截断（大仓库不做无界递归，但必须如实说明） */
+  scanTruncated: boolean;
 }
 
 export interface Snapshot {
@@ -55,9 +59,74 @@ export interface Snapshot {
   observations: Observation[];
   excluded: string[];
   unreadable: string[];
+  /** 空目录：随状态带出，接收端 mkdir 重建 */
+  emptyDirs: string[];
+  /** 基线提交里的文件路径：打包前的路径形态判定要连着基线一起看 */
+  baselinePaths: string[];
 }
 
 export type Progress = (stage: string, pct: number, message: string) => void;
+
+/** 单次捕获允许驻留内存的恢复材料上限（可用 ACB_CAPTURE_LIMIT_BYTES 覆盖，测试与极端环境用） */
+export const CAPTURE_MEMORY_LIMIT = (() => {
+  const raw = Number(process.env.ACB_CAPTURE_LIMIT_BYTES ?? "");
+  return Number.isFinite(raw) && raw > 0 ? raw : 1.5 * 1024 ** 3;
+})();
+
+/** 空目录扫描的边界：宁可如实说"扫到上限"，也不在大仓库（含 node_modules 的软链）上做无界遍历 */
+const EMPTY_DIR_VISIT_LIMIT = 20_000;
+const EMPTY_DIR_RESULT_LIMIT = 2_000;
+
+function isDefaultExcludedDir(rel: string): boolean {
+  return DEFAULT_EXCLUDES.some((re) => re.test(rel + "/"));
+}
+
+/** .gitignore 掉的目录（git 自己按 --directory 折叠好返回，避免我们逐个目录去判规则） */
+async function ignoredDirPrefixes(projectPath: string): Promise<Set<string>> {
+  const set = new Set<string>();
+  try {
+    const out = await gitNul(["ls-files", "--others", "--ignored", "--exclude-standard", "--directory", "-z"], projectPath);
+    for (const t of out) set.add(t.replace(/\/+$/, ""));
+  } catch { /* 拿不到就只按内置排除规则与 .git 剪枝 */ }
+  return set;
+}
+
+function isPrunedDir(rel: string, ignored: Set<string>): boolean {
+  if (rel === ".git" || rel.startsWith(".git/")) return true;
+  if (isDefaultExcludedDir(rel)) return true;
+  for (const g of ignored) if (g && (rel === g || rel.startsWith(g + "/"))) return true;
+  return false;
+}
+
+/** 找出工作区里的空目录（Git 不保存它们，不显式带过去接收端就少一层目录） */
+export async function findEmptyDirs(root: string): Promise<{ dirs: string[]; truncated: boolean }> {
+  const ignored = await ignoredDirPrefixes(root);
+  const dirs: string[] = [];
+  let visited = 0;
+  let truncated = false;
+  const stack: string[] = [""];
+  while (stack.length) {
+    const rel = stack.pop()!;
+    if (visited++ >= EMPTY_DIR_VISIT_LIMIT) { truncated = true; break; }
+    let names: string[];
+    try { names = await fs.readdir(path.join(root, rel)); } catch { continue; }
+    if (names.length === 0) {
+      if (rel && dirs.length < EMPTY_DIR_RESULT_LIMIT) dirs.push(rel);
+      else if (rel) truncated = true;
+      continue;
+    }
+    const subdirs: string[] = [];
+    for (const name of names) {
+      const childRel = rel ? `${rel}/${name}` : name;
+      let st: Awaited<ReturnType<typeof fs.lstat>>;
+      try { st = await fs.lstat(path.join(root, childRel)); } catch { continue; }
+      // 只下钻真实目录：lstat 下符号链接永远不是 directory，因此不会顺着链接成环
+      if (st.isDirectory()) subdirs.push(childRel);
+    }
+    for (const d of subdirs) if (!isPrunedDir(d, ignored)) stack.push(d);
+  }
+  return { dirs: dirs.sort(), truncated };
+}
 
 async function readIfExists(p: string): Promise<Buffer | null> {
   try { return await fs.readFile(p); } catch { return null; }
@@ -96,28 +165,29 @@ function sig(st: GitStatus): string {
 async function indexModes(cwd: string): Promise<Map<string, string>> {
   const map = new Map<string, string>();
   try {
-    const out = await git(["ls-files", "-s"], { cwd });
-    for (const line of out.split("\n")) {
-      const m = /^(\d{6}) [0-9a-f]+ (?:\d+\t)?(.*)$/.exec(line.trim());
+    // 必须用 -z：默认输出会被 core.quotePath 把非 ASCII 路径引用成八进制串，
+    // 那些 key 与 git status 里的真实路径永远对不上，中文路径的执行位与链接位就会静默丢失
+    for (const line of await gitNul(["ls-files", "-s", "-z"], cwd)) {
+      const m = /^(\d{6}) [0-9a-f]+ (?:\d+\t)?(.*)$/s.exec(line.trim());
       if (m) map.set(m[2], m[1]);
     }
   } catch { /* 空索引仓库：全部按未跟踪处理 */ }
   return map;
 }
 
-async function listTree(cwd: string, commit: string): Promise<string[]> {
+/** 基线提交里的文件路径（同样必须 -z，否则中文名文件在基线清单里是八进制串，后续一律落不了地） */
+export async function listTree(cwd: string, commit: string): Promise<string[]> {
   try {
-    const out = await git(["ls-tree", "-r", "--name-only", commit], { cwd });
-    return out.split("\n").filter(Boolean);
+    return await gitNul(["ls-tree", "-r", "--name-only", "-z", commit], cwd);
   } catch {
     return [];
   }
 }
 
 /**
- * 只做磁盘探测，不读文件内容。顺带挡下三类跨机还原的坑：
+ * 只做磁盘探测，不读文件内容。顺带挡下几类跨机还原的坑：
  * 路径穿越（拼进 path.join 会写到目标目录外）、被误当文件内容的符号链接、
- * 已提交进历史因此排除策略挡不住的凭据文件。
+ * 已提交进历史因此排除策略挡不住的凭据文件、只在 Windows 上不可命名的路径。
  */
 export async function plan(projectPath: string, onProgress?: Progress): Promise<CapturePlan> {
   onProgress?.("扫描工作区", 5, "正在读取 git 状态（大仓库首次扫描会慢）");
@@ -182,8 +252,14 @@ export async function plan(projectPath: string, onProgress?: Progress): Promise<
   const baselinePaths = st.commit ? await listTree(projectPath, st.commit) : [];
   const baselineSecrets = baselinePaths.filter((p) => looksLikeSecret(p));
   const size = await repoSize(projectPath);
+  onProgress?.("扫描基线", 26, "正在寻找 Git 不保存的空目录");
+  const empties = await findEmptyDirs(projectPath);
 
-  return { status: st, files, excluded, baselinePaths, baselineSecrets, repoBytes: size.bytes, objects: size.objects };
+  return {
+    status: st, files, excluded, baselinePaths, baselineSecrets,
+    repoBytes: size.bytes, objects: size.objects,
+    emptyDirs: empties.dirs, scanTruncated: empties.truncated,
+  };
 }
 
 /** 读取恢复材料：在 plan 的结果上补齐内容字节 */
@@ -195,6 +271,18 @@ export async function capture(
 ): Promise<Snapshot> {
   const p0 = preplant ?? await plan(projectPath, onProgress);
   const st = p0.status;
+
+  // 恢复材料是整体驻留内存的，先按实测体积判一次上限：半路 OOM 比现在停下更难解释
+  const pendingBytes = p0.files.reduce((s, f) => s + (f.status === "deleted" ? 0 : f.bytes), 0);
+  if (pendingBytes > CAPTURE_MEMORY_LIMIT) {
+    const biggest = [...p0.files].sort((a, b) => b.bytes - a.bytes).slice(0, 3)
+      .map((f) => `${f.path} ${fmtBytes(f.bytes)}`).join("、");
+    throw new Error(
+      `纳入范围的改动内容约 ${fmtBytes(pendingBytes)}，超过单次捕获的内存上限 ${fmtBytes(CAPTURE_MEMORY_LIMIT)}（最大几项：${biggest}）。`
+      + "出路：把大文件从改动范围里拿掉（可再生产物加进 .gitignore），或走「发布到 GitHub 交接分支」——那条路径按 git 对象传输，不需要把内容整体读进内存。",
+    );
+  }
+
   onProgress?.("读取文件", 30, `正在读取 ${p0.files.length} 个文件的恢复材料`);
 
   const files = new Map<string, CapturedFile>();
@@ -239,7 +327,16 @@ async function assemble(
     { source: "fs", scope: "排除策略", at: takenAt, text: p0.excluded.length ? `按纳入策略排除：${p0.excluded.map((e) => e.path).join("、")}` : "无排除项" },
     { source: "fs", scope: "文件形态", at: takenAt, text: `${links} 个符号链接按链接目标保存 · ${execs} 个可执行位随文件模式保留（Windows ↔ Linux 时执行位最容易丢）` },
     { source: "git", scope: "基线 bundle", at: takenAt, text: `仓库对象约 ${fmtBytes(p0.repoBytes)} · ${p0.objects} 个对象，基线 bundle 随包携带完整历史` },
+    {
+      source: "fs", scope: "空目录", at: takenAt,
+      text: p0.emptyDirs.length
+        ? `${p0.emptyDirs.length} 个空目录单独记录并随包重建（${p0.emptyDirs.slice(0, 5).join("、")}${p0.emptyDirs.length > 5 ? " 等" : ""}）：Git 不保存空目录，不显式带过去它们在接收端不会出现`
+        : "工作区没有空目录需要重建",
+    },
   ];
+  if (p0.scanTruncated) {
+    observations.push({ source: "fs", scope: "空目录扫描", at: takenAt, text: `空目录扫描触到上限（${EMPTY_DIR_VISIT_LIMIT} 个目录 / ${EMPTY_DIR_RESULT_LIMIT} 条结果），可能仍有未列出的空目录` });
+  }
   if (p0.baselineSecrets.length) {
     observations.push({
       source: "git", scope: "凭据告警", at: takenAt,
@@ -261,10 +358,12 @@ async function assemble(
     observations,
     excluded: p0.excluded.map((e) => e.path),
     unreadable,
+    emptyDirs: p0.emptyDirs,
+    baselinePaths: p0.baselinePaths,
   };
 }
 
-/** 在独立检查目录中物化快照（基线 + 工作区内容，与源工作区隔离） */
+/** 在独立检查目录中物化快照（基线 + 工作区内容 + 空目录，与源工作区隔离） */
 export async function materialize(snap: Snapshot, targetDir: string): Promise<void> {
   await ensureDir(targetDir);
   const touched = new Set(snap.files.map((f) => f.path));
@@ -272,19 +371,33 @@ export async function materialize(snap: Snapshot, targetDir: string): Promise<vo
   if (snap.baseline.commit) {
     const ls = await listTree(snap.projectPath, snap.baseline.commit);
     for (const p of ls) {
-      if (isExcluded(p) || touched.has(p)) continue;
+      if (isExcluded(p) || touched.has(p) || !isSafeRelPath(p)) continue;
       const content = await gitShow(snap.projectPath, snap.baseline.commit, p);
       if (content === null) continue;
-      await ensureDir(path.dirname(path.join(targetDir, p)));
-      await fs.writeFile(path.join(targetDir, p), content);
+      const dest = path.join(targetDir, p);
+      await ensureDir(path.dirname(dest));
+      // 基线里若已有同名的符号链接，先摘掉再写普通内容：否则 writeFile 会顺着链接写到目标上去
+      await fs.rm(dest, { force: true }).catch(() => {});
+      await fs.writeFile(dest, content);
     }
   }
   for (const f of snap.files) {
     if (f.workContent === null) continue; // 删除项与读不到的项都不物化
     const dest = path.join(targetDir, f.path);
     await ensureDir(path.dirname(dest));
-    await fs.writeFile(dest, f.workContent);
-    if (f.mode === "100755") await fs.chmod(dest, 0o755).catch(() => {});
+    await fs.rm(dest, { force: true }).catch(() => {});
+    if (f.mode === "120000") {
+      // 检查目录里链接要真的建成链接，否则依赖链接布局的检查命令会跑出假失败
+      const made = await fs.symlink(f.workContent.toString("utf8"), dest).then(() => true).catch(() => false);
+      if (!made) await fs.writeFile(dest, f.workContent);
+    } else {
+      await fs.writeFile(dest, f.workContent);
+      if (f.mode === "100755") await fs.chmod(dest, 0o755).catch(() => {});
+    }
+  }
+  // 空目录同样重建：不少项目留着 uploads/ 或 logs/ 空目录跑运行时检查
+  for (const d of snap.emptyDirs) {
+    if (isSafeRelPath(d)) await ensureDir(path.join(targetDir, d)).catch(() => {});
   }
   await fs.writeFile(
     path.join(targetDir, ".acb-check.json"),

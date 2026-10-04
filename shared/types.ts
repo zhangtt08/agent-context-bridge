@@ -78,6 +78,11 @@ export interface ProjectState {
 
   recoveryRequirements: string[];  // 必需但未纳入、接收端需补齐（如 .env）
   capabilities: string[];          // git/node 等
+  /**
+   * 工作区里的空目录（相对路径）。Git 不保存空目录，所以它们既不在 status 也不在基线树里；
+   * 0.1 增补字段，旧包没有这一项，接收端一律按 ?? [] 读。
+   */
+  emptyDirs?: string[];
 }
 
 export interface PackageManifest {
@@ -146,6 +151,29 @@ export interface ResumeReport {
   verifiedCount?: number;
   restoredCount?: number;
   archiveSha256?: string;
+  /** 基线物化的实测对账：应写入 / 实际写入 / 被跳过的路径（跳过多于 0 时这一步不算通过） */
+  baselineExpected?: number;
+  baselineWritten?: number;
+  baselineSkipped?: string[];
+  /** 逐项回执：一致 / 变更 / 只在包里 / 只在目标 */
+  receipt?: ResumeReceipt;
+}
+
+/** 还原后的逐项对账：把"哪些一致、哪些变更、哪些只在包里、哪些只在目标"摊开，不靠一句话总结 */
+export interface ResumeReceipt {
+  /** 目标目录里本来就有、且与包内逐字节一致 */
+  identical: number;
+  /** 目标目录里内容不同、按策略被包内版本替换 */
+  overwritten: number;
+  /** 只在包里：本次没有落到目标目录的包内路径（跳过/策略/形态问题），逐条给出 */
+  onlyInPackage: string[];
+  /** 只在目标：还原后仍在目标目录、但不属于本次交接内容的条目（本机自己的东西） */
+  onlyInTarget: string[];
+  /** 上面两项各自的总数（列表按上限截断时用这两个数说明还有多少） */
+  onlyInPackageCount: number;
+  onlyInTargetCount: number;
+  /** 空目录重建数 */
+  emptyDirsRestored: number;
 }
 
 /** 恢复冲突处理策略：还原前先看清目标目录已有什么 */
@@ -189,6 +217,10 @@ export interface CapturePreview {
   excluded: PreviewExclusion[];
   /** 已提交进 Git 历史、随基线 bundle 一起带走的凭据文件（排除策略挡不住历史） */
   baselineSecrets: string[];
+  /** 工作区里的空目录（Git 不保存，随包单独重建） */
+  emptyDirs: string[];
+  /** 空目录扫描是否触到上限（触到时列表不完整，必须说明） */
+  emptyDirsTruncated: boolean;
   alerts: PreviewAlert[];
   checksConfigured: number;
   env: { os: string; runtime: string; git: string };
@@ -228,6 +260,19 @@ export interface ResumePreview {
   sourceEnv: { os: string; runtime: string };
   /** 归档体积与摘要说明（本机封存目录时写"无归档摘要"） */
   archiveInfo?: string;
+  /**
+   * 只在目标：目标目录里已有、但交接内容（改动 + 基线树）里没有的条目。
+   * 还原不会碰它们，但必须让人看见 —— 否则"恢复完成"会被误读成"目录里就是交接内容"。
+   */
+  onlyInTarget?: string[];
+  /** onlyInTarget 的总数（列表按上限截断时用它说明还有多少） */
+  onlyInTargetCount?: number;
+  /** 包内总路径数（改动 + 基线树，基线树取不到时为 null） */
+  packagePathCount?: number;
+  /** 基线树里但目标目录还没有的路径数（= 还原会补上的未改动文件数） */
+  baselineMissingInTarget?: number;
+  /** 基线文件清单是否拿到了（bundle 缺失/读不出时为 false，此时上面两项按 0 处理并如实标注） */
+  baselineListed?: boolean;
 }
 
 /** 长任务（打包 / 还原）的进度视图：轮询它就有大仓库的耗时反馈 */

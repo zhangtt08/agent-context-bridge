@@ -21,7 +21,16 @@ async function createWindow() {
     app.quit();
     return;
   }
-  const port = await startServer(Number(process.env.ACB_PORT) || 0); // 0=随机可用端口；测试/打包可注入固定端口
+  // startServer 只绑回环，并返回 {host, port, server, close}（ACB_BIND_HOST 非回环时它会拒绝启动）
+  let handle;
+  try {
+    handle = await startServer(Number(process.env.ACB_PORT) || 0); // 0=随机可用端口；测试/打包可注入固定端口
+  } catch (e) {
+    dialog.showErrorBox("ACB 启动失败", String(e?.message ?? e));
+    app.quit();
+    return;
+  }
+  const port = handle.port;
 
   win = new BrowserWindow({
     width: 1500,

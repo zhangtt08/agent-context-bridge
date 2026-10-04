@@ -5,6 +5,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { HandoffRecord, PublicationReceipt, ProjectState } from "../../shared/types.js";
 import { git, exists } from "./gitutil.js";
+import { assertSafeGitRemote, assertSafeGitRefish } from "./remote-policy.js";
 import { exportArchive, verifyPackage } from "./package.js";
 
 export interface PublishResult { receipt: PublicationReceipt }
@@ -39,6 +40,10 @@ export async function publishLocal(rec: HandoffRecord, outPath: string): Promise
  */
 export async function publishGithub(projectPath: string, rec: HandoffRecord, remote: string): Promise<PublishResult> {
   const s: ProjectState = rec.state;
+  // 远端值会被当成 argv 的一个元素交给 git（push / ls-remote / fetch）。
+  // 这里判一次而不只在 HTTP 层判：CLI、Agent 工具、以后新增的入口都走这条路，
+  // 少一处判定就少一处防线（--upload-pack=<cmd> 在本机实测真的会执行命令）。
+  const safeRemote = assertSafeGitRemote(remote, "remote");
   const branch = `acb/handoff/${s.handoffId}`;
   const pkgDir = rec.packageDir;
   const metaPrefix = ".acb-meta";
@@ -66,7 +71,9 @@ export async function publishGithub(projectPath: string, rec: HandoffRecord, rem
       const abs = path.join(pkgDir, "payload", "work", c.path);
       if (await exists(abs)) {
         const blob = await hashFile(abs);
-        await updateIndex("--add", "--cacheinfo", `100644,${blob},${c.path}`);
+        // 模式按包内记录写：写死 100644 会把 100755 的执行位和 120000 的符号链接形态
+        // 在 GitHub 这条路径上抹平 —— 接收端拿到的是"内容相同、形态不同"的文件
+        await updateIndex("--add", "--cacheinfo", `${c.mode},${blob},${c.path}`);
       }
     }
   }
@@ -106,7 +113,8 @@ export async function publishGithub(projectPath: string, rec: HandoffRecord, rem
   for (let i = 0; i < 3 && !pushed; i++) {
     attempts++;
     try {
-      await git(["push", remote, `${commitSha}:refs/heads/${branch}`], { cwd: projectPath });
+      // `--`：refspec 是拼接出来的字符串，挡在选项解析之前（remote 已在函数开头判过）
+      await git(["push", safeRemote, "--", `${commitSha}:refs/heads/${branch}`], { cwd: projectPath });
       pushed = true;
     } catch (e) {
       lastErr = (e as Error).message;
@@ -119,12 +127,12 @@ export async function publishGithub(projectPath: string, rec: HandoffRecord, rem
   let readBackDetail = "";
   if (pushed) {
     try {
-      const out = await git(["ls-remote", remote, `refs/heads/${branch}`], { cwd: projectPath });
+      const out = await git(["ls-remote", safeRemote, "--", `refs/heads/${branch}`], { cwd: projectPath });
       if (!out.includes(commitSha)) {
         readBackDetail = "远端引用里找不到这次推送的提交";
       } else {
         try {
-          await git(["fetch", "-q", remote, `refs/heads/${branch}`], { cwd: projectPath });
+          await git(["fetch", "-q", safeRemote, "--", `refs/heads/${branch}`], { cwd: projectPath });
           const meta = await git(["cat-file", "-p", `${commitSha}:${metaPrefix}/manifest.json`], { cwd: projectPath });
           readBack = JSON.parse(meta).handoffId === s.handoffId;
           readBackDetail = readBack ? "清单已从远端取回并核对" : "远端清单里的交接 ID 与本次不一致";
@@ -160,7 +168,9 @@ function buildPushError(pushed: boolean, lastErr: string | undefined, readBackDe
 
 /** 列出远端全部交接引用（分叉通过父关系识别，由上层处理） */
 export async function listRemoteHandoffs(projectPath: string, remote: string): Promise<{ id: string; branch: string; sha: string }[]> {
-  const out = await git(["ls-remote", "--heads", remote, "refs/heads/acb/handoff/*"], { cwd: projectPath });
+  const safeRemote = assertSafeGitRemote(remote);
+  const pattern = assertSafeGitRefish("refs/heads/acb/handoff/*", "ref 模式");
+  const out = await git(["ls-remote", "--heads", safeRemote, "--", pattern], { cwd: projectPath });
   return out.trim().split("\n").filter(Boolean).map((line) => {
     const [sha, ref] = line.split("\t");
     return { id: ref.replace("refs/heads/acb/handoff/", ""), branch: ref, sha };
@@ -169,10 +179,14 @@ export async function listRemoteHandoffs(projectPath: string, remote: string): P
 
 /** 从远端取回指定交接的元数据（不落到工作区，仅读对象） */
 export async function fetchRemoteMeta(projectPath: string, remote: string, handoffId: string): Promise<{ state: ProjectState; commitSha: string } | null> {
-  const branch = `acb/handoff/${handoffId}`;
-  const out = await git(["ls-remote", remote, `refs/heads/${branch}`], { cwd: projectPath }).catch(() => "");
+  const safeRemote = assertSafeGitRemote(remote);
+  const branch = `acb/handoff/${assertSafeGitRefish(handoffId, "handoffId")}`;
+  const ref = `refs/heads/${branch}`;
+  const out = await git(["ls-remote", safeRemote, "--", ref], { cwd: projectPath }).catch(() => "");
   if (!out.trim()) return null;
   const sha = out.split("\t")[0].trim();
+  // sha 来自远端输出，拼进 cat-file 前必须按 40 位十六进制判死（不是"看起来像 hash"）
+  if (!/^[0-9a-f]{40}$/.test(sha)) return null;
   const metaJson = await git(["cat-file", "-p", `${sha}:${metaPrefix}/acb-state/project-state.json`], { cwd: projectPath }).catch(() => null);
   if (!metaJson) return null;
   return { state: JSON.parse(metaJson), commitSha: sha };

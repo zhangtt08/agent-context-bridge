@@ -25,6 +25,9 @@ logs/
 .acb/
 *.acb.tar.gz
 
+# ---- Agent 服务发现文件（启动时写入实际端口，属生成物）----
+agent/.endpoint
+
 # ---- 编辑器 / 系统 ----
 .vscode/*
 !.vscode/extensions.json
@@ -37,3 +40,6 @@ logs/
 *.sw?
 
 # 注意：tests/ 与 build/（桌面图标源文件）是真实资产，必须入库，勿在此忽略。
+
+# ---- Windows 快捷方式（本机桌面产物，不进仓库）----
+*.lnk

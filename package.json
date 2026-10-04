@@ -4,14 +4,19 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "concurrently -k \"tsx server/index.ts\" \"vite\"",
-    "server": "tsx server/index.ts",
+    "dev": "concurrently -k \"tsx server/main.ts\" \"vite\"",
+    "server": "tsx server/main.ts",
     "cli": "tsx server/cli.ts",
     "test": "tsx tests/e2e.ts",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b && tsc -p tsconfig.server.json --noEmit",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "verify": "node scripts/verify-release.mjs",
+    "package": "bash scripts/pack-desktop.sh",
+    "agent:serve": "tsx server/main.ts",
+    "agent:mcp": "node agent/mcp-server.mjs",
+    "agent:tools": "node agent/tools.mjs"
   },
   "dependencies": {
     "express": "^5.2.1",

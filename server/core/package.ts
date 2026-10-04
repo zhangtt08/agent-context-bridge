@@ -96,6 +96,7 @@ export async function buildManifest(pkgDir: string, s: ProjectState): Promise<Pa
     let items: string[] = [];
     try { items = await fs.readdir(base); } catch { return; }
     for (const it of items) {
+      if (!prefix && it === "manifest.json") continue;
       const full = path.join(base, it);
       const st = await fs.lstat(full);
       if (st.isDirectory()) await walk(full, prefix + it + "/");

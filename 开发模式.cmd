@@ -23,6 +23,11 @@ if not exist node_modules (
 
 echo Starting ACB in dev mode. Press Ctrl+C to stop both processes.
 echo.
+rem The API binds 127.0.0.1 only and rejects any Origin that is not its own loopback
+rem host:port (see server/core/local-guard.ts). In dev the page lives on vite's :5173 and
+rem calls /api through the proxy, so that origin has to be allowed explicitly. Loopback
+rem origins only - a non-loopback value here makes the server refuse to start on purpose.
+if "%ACB_ALLOWED_ORIGINS%"=="" set "ACB_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173"
 call npm run dev
 exit /b %errorlevel%
 

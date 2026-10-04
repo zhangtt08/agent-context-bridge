@@ -179,7 +179,24 @@ ${receipt.error}` : ""}`);
                   </>
                 )}
 
-                <div className="xs faint" style={{ marginTop: 10 }}>{preview.bundleNote}</div>
+                <div className="xs faint" style={{ marginTop: 10 }}>
+                  {preview.bundleNote}
+                  {preview.emptyDirs.length > 0 && (
+                    <>
+                      <br />
+                      Git 不保存空目录，本次会另记 {preview.emptyDirs.length} 个并在接收端重建
+                      {preview.emptyDirsTruncated ? "（扫描已达上限，列表可能不完整）" : ""}：
+                      <span className="mono">{preview.emptyDirs.slice(0, 6).join("、")}</span>
+                      {preview.emptyDirs.length > 6 ? " 等" : ""}。
+                    </>
+                  )}
+                  {preview.emptyDirs.length === 0 && preview.emptyDirsTruncated && (
+                    <>
+                      <br />
+                      空目录扫描达到上限，本次未列出空目录。
+                    </>
+                  )}
+                </div>
               </>
             )}
           </Panel>

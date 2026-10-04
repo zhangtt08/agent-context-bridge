@@ -76,6 +76,8 @@ export function renderEntryMarkdown(rec: HandoffRecord): string {
   const execs = s.changes.filter((c) => c.mode === "100755").map((c) => c.path);
   if (links.length) L.push(`- 符号链接 ${links.length} 个（按链接目标保存）：${links.slice(0, 10).join("、")}`);
   if (execs.length) L.push(`- 可执行位 ${execs.length} 个（随文件模式 100755 保留）：${execs.slice(0, 10).join("、")}`);
+  const emptyDirs = s.emptyDirs ?? [];
+  if (emptyDirs.length) L.push(`- 空目录 ${emptyDirs.length} 个（Git 不保存，恢复时单独重建）：${emptyDirs.slice(0, 10).join("、")}${emptyDirs.length > 10 ? " 等" : ""}`);
   L.push("");
 
   L.push("## 五、未完成与阻塞", "");
@@ -112,8 +114,20 @@ export function renderReportMarkdown(r: ResumeReport): string {
     L.push("## 完整性回执", "");
     if (r.entryCount !== undefined) L.push(`- 包清单条目：${r.entryCount} 个${r.verifiedCount !== undefined ? ` · 逐条 SHA-256 核对通过 ${r.verifiedCount} 个` : ""}`);
     if (r.restoredCount !== undefined) L.push(`- 写入目标目录：${r.restoredCount} 个文件`);
+    if (r.baselineExpected !== undefined) L.push(`- 基线物化：应 ${r.baselineExpected} 个路径 · 实际写入 ${r.baselineWritten ?? 0} 个${r.baselineSkipped?.length ? ` · 未落地 ${r.baselineSkipped.length} 个` : ""}`);
+    if (r.baselineSkipped?.length) for (const p of r.baselineSkipped.slice(0, 20)) L.push(`  - 未落地：${p}`);
     if (r.archiveSha256) L.push(`- 归档 SHA-256：\`${r.archiveSha256}\`（与源端导出回执逐字比对，一致才说明拿到的是同一份文件）`);
     L.push("");
+  }
+  if (r.receipt) {
+    const rc = r.receipt;
+    L.push("## 逐项对账", "");
+    L.push(`- 一致（目标里本来就有、逐字节相同）：${rc.identical} 项`);
+    L.push(`- 变更（目标里内容不同、按「覆盖」策略替换）：${rc.overwritten} 项`);
+    L.push(`- 只在包里（没有落到目标目录）：${rc.onlyInPackageCount} 项${rc.onlyInPackage.length ? ` —— ${rc.onlyInPackage.slice(0, 20).join("；")}` : ""}`);
+    L.push(`- 只在目标（本机自己的文件，本次未触碰）：${rc.onlyInTargetCount} 项${rc.onlyInTarget.length ? ` —— ${rc.onlyInTarget.slice(0, 20).join("、")}` : ""}`);
+    L.push(`- 空目录重建：${rc.emptyDirsRestored} 个`);
+    L.push("", "以上四类的判据来自包内清单与目标目录的实测比对；「只在包里」不为空时说明这次还原并不完整，逐条给出原因。", "");
   }
   L.push("## 恢复步骤", "", ...r.steps.map((s) => `- [${s.ok ? "x" : " "}] ${s.title} — ${s.detail}`), "");
   if (r.gaps.length) {

@@ -4,8 +4,8 @@ import { capture, Snapshot } from "./capture.js";
 import { runChecks } from "./verify.js";
 import { seal } from "./package.js";
 import { validateState, renderEntryMarkdown } from "./protocol.js";
-import { id, isGitRepo, caseCollisions } from "./gitutil.js";
-import { recoveryRequirements } from "./preview.js";
+import { id, isGitRepo } from "./gitutil.js";
+import { recoveryRequirements, fidelityScopePaths, pathFidelityBlockerMessage } from "./preview.js";
 import { storeDir, saveHandoffRecord } from "./store.js";
 import type { HandoffRecord, VerificationRecord, ProjectState } from "../../shared/types.js";
 
@@ -36,11 +36,10 @@ export async function createHandoff(cfg: ProjectConfig, input: CreateHandoffInpu
   onProgress?.("捕获快照", 10, "正在扫描工作区");
   const snap: Snapshot = await capture(cfg.projectId, cfg.path, onProgress);
 
-  // 只在大小写不敏感的本机文件系统上拦：Linux 接收端能容纳，但同一份包在 Windows 上还原会静默覆盖
-  const collisions = caseCollisions(snap.files.map((f) => f.path));
-  if (collisions.length) {
-    throw new Error(`纳入范围里有仅大小写不同的路径（${collisions[0].join(" / ")}），Windows/macOS 恢复时其中一个会被静默覆盖 —— 请先在源仓库改名再创建交接`);
-  }
+  // 路径形态判据与审阅清单共用同一份：改动 + 基线树一起看，
+  // 否则"界面说阻塞、CLI/接口照样打出包"，而那个包在 Windows 上必然静默覆盖
+  const blocker = pathFidelityBlockerMessage(fidelityScopePaths(snap.files.map((f) => f.path), snap.baselinePaths));
+  if (blocker) throw new Error(blocker);
 
   let verifications: VerificationRecord[] = [];
   if (input.runChecks && cfg.checks.length > 0) {
@@ -83,6 +82,7 @@ export async function createHandoff(cfg: ProjectConfig, input: CreateHandoffInpu
         : [],
     recoveryRequirements: recoveryRequirements(snap.excluded),
     capabilities: ["git"],
+    emptyDirs: snap.emptyDirs,
   };
 
   const errs = validateState(state);
