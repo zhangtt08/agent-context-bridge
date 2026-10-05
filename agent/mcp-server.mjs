@@ -5,7 +5,7 @@
 //
 // 相对模板只改了两处，且都是 ACB 自己的安全形状：
 //   1. 端口不写死：ready_port 缺失时直接报错，而不是回落到某个"别的项目的默认端口"；
-//   2. 本机令牌：ACB 服务设了 ACB_LOCAL_TOKEN 时，非只读的 tools/call 必须带 x-agent-token，
+//   2. 本机令牌：ACB 服务设了 ACB_LOCAL_TOKEN 时，非只读的 tools/call 必须带 x-acb-token，
 //      否则会被 server/core/local-guard.ts 判 403。桥把同一个环境变量透传过去，不新存一份。
 import { spawn } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
@@ -36,7 +36,7 @@ function endpointFile() {
 function headers(withBody) {
   const h = withBody ? { 'content-type': 'application/json' } : {};
   const token = (process.env.ACB_LOCAL_TOKEN ?? '').trim();
-  if (token) h['x-agent-token'] = token;
+  if (token) h['x-acb-token'] = token;
   return h;
 }
 

@@ -1,6 +1,9 @@
 {
   "command": "node",
-  "args": ["node_modules/tsx/dist/cli.mjs", "server/main.ts"],
+  "args": [
+    "node_modules/tsx/dist/cli.mjs",
+    "server/main.ts"
+  ],
   "ready_port": 5174,
   "ready_path": "/api/health",
   "note": "ACB 用项目自带的 Express 服务（就地接入形状 B：没有第二个 agent 进程，也没有第二个端口）。四个契约端点由 server/agent/routes.ts 提供，工具注册表在 server/agent/tools.ts。端口默认 5174，可用 ACB_PORT 改；实际监听地址会被写进 agent/.endpoint（打包目录里没有 agent/ 时跳过）。服务只绑 127.0.0.1，ACB_BIND_HOST 也只接受回环地址。入口是 server/main.ts 而不是 server/index.ts：index.ts 只 export startServer、从不 listen，按它当入口起的是一个端口都不监听的空进程（这条自动拉起会把服务'起成功'却连不上）。",
@@ -9,8 +12,14 @@
   "tools_source": "server/agent/tools.ts（唯一实现）。agent/tools.mjs 只是它的命令行外壳，不重写 handler。",
   "security": {
     "bind": "127.0.0.1 only",
-    "host_allowlist": ["127.0.0.1:<port>", "localhost:<port>", "[::1]:<port>"],
+    "host_allowlist": [
+      "127.0.0.1:<port>",
+      "localhost:<port>",
+      "[::1]:<port>"
+    ],
     "origin_check": "存在 Origin/Referer 时必须等于本服务自己的回环源",
-    "token_env": "ACB_LOCAL_TOKEN（设置后所有非 GET 请求必须带 x-agent-token）"
-  }
+    "token_env": "ACB_LOCAL_TOKEN（设置后所有非 GET 请求必须带 x-acb-token）"
+  },
+  "probe_tool_query": "storage_status",
+  "_probe_tool_query_note": "\"_probe_note\": \"验收器真跑一次只读探路：acb.storage_status 是 risk=read、零必填、只报存储现状的工具。就地并入型必须点名安全工具。\","
 }

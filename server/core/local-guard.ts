@@ -15,7 +15,7 @@
 //   3. Origin/Referer：存在时必须也指向同一个回环 host:port，否则 403。
 //      回环绑定挡住了"别的机器直接连"，但本机里别的网页（另一个 localhost 端口上的应用）
 //      仍然能对这里发 fetch —— 那是 CSRF，Origin 检查堵的就是这一条。
-//   4. 令牌（可选）：ACB_LOCAL_TOKEN 一旦设置，所有非只读请求必须带 x-agent-token。
+//   4. 令牌（可选）：ACB_LOCAL_TOKEN 一旦设置，所有非只读请求必须带 x-acb-token。
 //      用于"确实要让本机另一个进程写"的场景，而不是把服务开给网络。
 //
 // 一律不回 `Access-Control-Allow-Origin`：这个服务没有跨源调用方。浏览器能用它是因为
@@ -195,13 +195,13 @@ export function localGuard(cfg: GuardConfig) {
     }
 
     if (token && !READONLY_METHODS.has(req.method.toUpperCase())) {
-      const raw = req.headers["x-agent-token"];
+      const raw = req.headers["x-acb-token"];
       const provided = Array.isArray(raw) ? raw[0] : raw;
       if (!tokenMatches(provided, token)) {
         forbidden(
           res,
           "unauthorized",
-          `服务设置了 ACB_LOCAL_TOKEN：${req.method} 请求必须带请求头 x-agent-token 且值与令牌一致。` +
+          `服务设置了 ACB_LOCAL_TOKEN：${req.method} 请求必须带请求头 x-acb-token 且值与令牌一致。` +
           `出路：把令牌放进调用方环境变量（ACB_LOCAL_TOKEN），不要把它写进代码或交接包。`,
         );
         return;

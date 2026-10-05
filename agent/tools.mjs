@@ -71,7 +71,7 @@ export async function findLiveBase(timeoutMs = 1500) {
 function tokenHeaders(withBody) {
   const h = withBody ? { "content-type": "application/json" } : {};
   const token = (process.env.ACB_LOCAL_TOKEN ?? "").trim();
-  if (token) h["x-agent-token"] = token;
+  if (token) h["x-acb-token"] = token;
   return h;
 }
 

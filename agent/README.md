@@ -71,7 +71,7 @@ node agent/tools.mjs --selftest      # 逐个真跑只读工具，确认返回�
   判据是固定字面量清单，**不拿请求自己的 Host 当基准**（那是 DNS 重绑定的正解：
   `evil.example` 解析到 127.0.0.1 之后，请求确实来自回环，但它来自另一个源）。
 - **Origin/Referer**：存在时必须等于本服务自己的回环源，否则 403 `forbidden_origin`。
-- **本机令牌**：`ACB_LOCAL_TOKEN` 一旦设置，所有非 GET 请求必须带 `x-agent-token`（定时安全比较）。
+- **本机令牌**：`ACB_LOCAL_TOKEN` 一旦设置，所有非 GET 请求必须带 `x-acb-token`（定时安全比较）。
   MCP 桥与 `agent/tools.mjs` 会把同一个环境变量透传过去；值只待在进程环境里，不进代码、不进日志。
 - 服务端**从不**回 `Access-Control-Allow-Origin: *`：这个服务没有跨源调用方。
 - 开发模式（vite :5173 代理到 :5174）需要放行 5173：`开发模式.cmd` 已经内置
